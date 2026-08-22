@@ -313,8 +313,8 @@ static std::string ReadConsoleLine(char mask = 0) {
 }
 
 // KeyAuth application details — copy these from https://keyauth.cc/app/
-static std::string keyauth_name = skCrypt("name").decrypt();
-static std::string keyauth_ownerid = skCrypt("ownerid").decrypt();
+static std::string keyauth_name = skCrypt("R33zi's Application").decrypt();
+static std::string keyauth_ownerid = skCrypt("wgbjKy8dCQ").decrypt();
 static std::string keyauth_version = skCrypt("1.0").decrypt();
 static std::string keyauth_url = skCrypt("https://keyauth.win/api/1.3/").decrypt();
 static std::string keyauth_path = skCrypt("").decrypt();
