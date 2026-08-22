@@ -15,7 +15,9 @@
 #include "r6_entities.h"
 #include "skeleton_emu.h"
 #include "antitamper.h"
-#include "auth.hpp"
+#include "keyauth/auth.hpp"
+#include "keyauth/skStr.h"
+#include <conio.h>
 
 std::atomic<bool> g_manualInMatch{false};
 
@@ -303,38 +305,67 @@ static ImU32 GetFovColor() {
     return ColorToU32(fovCircleColor);
 }
 
-static std::string ReadHiddenLine() {
+// Reads a line key by key so input stays visible; pass a mask ('*') for secrets.
+static std::string ReadConsoleLine(char mask = 0) {
     std::string value;
-    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
-    DWORD mode = 0;
-    bool restore = GetConsoleMode(input, &mode) != FALSE;
-    if (restore) SetConsoleMode(input, mode & ~ENABLE_ECHO_INPUT);
-    std::getline(std::cin, value);
-    if (restore) SetConsoleMode(input, mode);
+    for (;;) {
+        const int key = _getch();
+        if (key == '\r' || key == '\n') break;
+        if (key == 3) exit(0);                       // Ctrl+C
+        if (key == '\b' || key == 127) {
+            if (!value.empty()) { value.pop_back(); printf("\b \b"); }
+            continue;
+        }
+        if (key == 0 || key == 0xE0) { _getch(); continue; }  // arrows / function keys
+        if (key < 32) continue;
+        value += (char)key;
+        putchar(mask ? mask : key);
+    }
     printf("\n");
     return value;
 }
 
+// KeyAuth application details — copy these from https://keyauth.cc/app/
+static std::string keyauth_name = skCrypt("R33zi's Application").decrypt();
+static std::string keyauth_ownerid = skCrypt("wgbjKy8dCQ").decrypt();
+static std::string keyauth_version = skCrypt("1.0").decrypt();
+static std::string keyauth_url = skCrypt("https://keyauth.win/api/1.3/").decrypt();
+static std::string keyauth_path = skCrypt("").decrypt();
+
+static KeyAuth::api KeyAuthApp(keyauth_name, keyauth_ownerid, keyauth_version, keyauth_url, keyauth_path);
+
 static bool RunAuthentication() {
-    AuthFusion auth;
-    const std::string hwid = AuthFusion::get_hwid();
+    printf("[.] Connecting to KeyAuth...\n");
+    KeyAuthApp.init();
+    if (!KeyAuthApp.response.success) {
+        printf("[!] Init failed: %s\n", KeyAuthApp.response.message.c_str());
+        return false;
+    }
+    // Wipe the app details from memory now that the session is established.
+    keyauth_name.clear(); keyauth_ownerid.clear(); keyauth_version.clear();
+    keyauth_url.clear(); keyauth_path.clear();
 
     for (int attempt = 1; attempt <= 3; attempt++) {
         std::string username, password;
         printf("[*] Username: ");
-        std::getline(std::cin, username);
+        username = ReadConsoleLine();
         printf("[*] Password: ");
-        password = ReadHiddenLine();
+        password = ReadConsoleLine('*');
 
         printf("[.] Authenticating...\n");
-        AuthFusion::result res = auth.login(username, password, hwid);
-        if (res.success) {
-            printf("[+] Welcome %s\n", res.username.empty() ? username.c_str() : res.username.c_str());
-            if (!res.expiry.empty()) printf("[+] Subscription expires: %s\n", res.expiry.c_str());
+        KeyAuthApp.login(username, password);
+        if (KeyAuthApp.response.success) {
+            printf("[+] Welcome %s\n", KeyAuthApp.user_data.username.empty()
+                ? username.c_str() : KeyAuthApp.user_data.username.c_str());
+            printf("[+] HWID: %s\n", KeyAuthApp.user_data.hwid.c_str());
+            for (const auto& sub : KeyAuthApp.user_data.subscriptions)
+                printf("[+] %s expires in %s\n", sub.name.c_str(),
+                    KeyAuth::api::expiry_remaining(sub.expiry).c_str());
             return true;
         }
 
-        printf("[!] Login failed: %s\n", res.message.empty() ? "unknown error" : res.message.c_str());
+        printf("[!] Login failed: %s\n", KeyAuthApp.response.message.empty()
+            ? "unknown error" : KeyAuthApp.response.message.c_str());
         if (attempt < 3) printf("[.] Attempts left: %d\n\n", 3 - attempt);
     }
     return false;
@@ -348,7 +379,7 @@ int main(int argc, const char* argv[]) {
     printf("========================================\n");
     printf("  Oxium R6 external\n");
     printf("========================================\n\n");
-    printf("[*] HWID: %s\n\n", AuthFusion::get_hwid().c_str());
+    printf("[*] HWID: %s\n\n", utils::get_hwid().c_str());
     if (!RunAuthentication()) {
         printf("[!] Authentication failed.\n");
         system("pause");
