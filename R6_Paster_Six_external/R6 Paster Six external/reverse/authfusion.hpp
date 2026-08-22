@@ -13,12 +13,12 @@
 #pragma comment(lib, "winhttp.lib")
 #endif
 
-// Fill these in with the values from the AuthFusion panel.
+// Values from the AuthFusion panel.
 #ifndef AUTHFUSION_OWNERID
-#define AUTHFUSION_OWNERID ""
+#define AUTHFUSION_OWNERID "3bd7dc39-eb3e-4463-91c7-2b7ae45fd022"
 #endif
 #ifndef AUTHFUSION_SECRET
-#define AUTHFUSION_SECRET ""
+#define AUTHFUSION_SECRET "3c99f04ac7fb08579523ff2c584283f4"
 #endif
 #ifndef AUTHFUSION_URL
 #define AUTHFUSION_URL "https://nxrauth-3x4c.onrender.com"
