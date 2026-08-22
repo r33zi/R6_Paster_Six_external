@@ -331,9 +331,9 @@ int main(int argc, const char* argv[]) {
     px33_init_antitamper();
     system("color 3");
     system("cls");
-    SetConsoleTitleA("profound");
+    SetConsoleTitleA("Oxium R6 external");
     printf("========================================\n");
-    printf("  profound  //  by rac0\n");
+    printf("  Oxium R6 external\n");
     printf("========================================\n\n");
     printf("[*] HWID: %s\n\n", AuthFusion::get_hwid().c_str());
     if (!RunAuthentication()) {
