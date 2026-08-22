@@ -1,0 +1,579 @@
+#pragma once
+
+#include <cstdint>
+#include <cstring>
+#include <cmath>
+#include <unordered_map>
+#include <mutex>
+#include "skel.h"
+#include "skel_autodiscover.h"
+
+struct Vec3B { float x, y, z; };
+
+struct SkeletonBones {
+    Vec3B bones[skel::BONE_COUNT];
+    bool  hasBone[skel::BONE_COUNT];
+    int   total;
+};
+
+struct BoneCacheEntry {
+    SkeletonBones bones;
+    SkeletonBones prev_bones;    // previous frame for temporal smoothing
+    uint64_t      last_update_ms;
+    uint8_t       consecutive_fails;
+    bool          has_prev;      // true if prev_bones is valid
+};
+
+inline std::unordered_map<uint64_t, BoneCacheEntry> g_boneCache;
+inline std::mutex                                    g_boneCacheMtx;
+
+// Zero-delay skeleton — recompute every frame like box ESP.
+// Cache is kept ONLY so multiple render passes in the same frame don't
+// redundantly read; a 1ms TTL is effectively "same frame" at 60+ fps.
+// Failures are cached longer to avoid hammering the driver on dead comps.
+static constexpr uint64_t kBoneCacheOkTTL   = 1;
+static constexpr uint64_t kBoneCacheFailTTL = 100;
+
+// PATH A: resolve palette by matching against entity world position.
+// Bypasses the char-comp/tag lookup entirely. Works whether palettes are
+// stored world- or local-space because we center + translate by draw_pos.
+static bool ReadSkeleton_ByPosition(uint64_t entity, float wx, float wy, float wz, SkeletonBones& s) {
+    if (!(std::isfinite(wx) && std::isfinite(wy) && std::isfinite(wz))) return false;
+    if (fabsf(wx) < 0.01f && fabsf(wy) < 0.01f && fabsf(wz) < 0.01f) return false;
+
+    skel::MatchedPalette mp;
+    // Widened from 5m → 8m. R6 palettes are stored around the character's mesh
+    // origin (chest area); draw_pos is feet. That gives a ~1.5m Z offset baseline,
+    // and light animation adds another 0.5m variance. 5m was cutting valid binds
+    // when combined with slight world-position lag.
+    if (!skel::ResolvePaletteByPosition(entity, wx, wy, wz, mp, 8.0f)) {
+        static uint64_t s_lastLog = 0;
+        uint64_t now_ms = skel::NowMicros() / 1000;
+        if (now_ms - s_lastLog > 3000) {
+            s_lastLog = now_ms;
+            skel::Log("[BONES] ByPosition: no palette match for entity=0x%llX pos=(%.1f,%.1f,%.1f)\n",
+                (unsigned long long)entity, wx, wy, wz);
+        }
+        return false;
+    }
+
+    skel::Vec3f raw[256];
+    int nbones = 0;
+    if (!skel::ReadPaletteBonesRaw(mp.palette, mp.count, raw, 256, nbones)) return false;
+    if (nbones < 17) return false;
+
+    // Center bones around the palette's own centroid — removes any
+    // world-space translation baked into the palette.
+    skel::Vec3f centroid{};
+    for (int i = 0; i < nbones; ++i) { centroid.x += raw[i].x; centroid.y += raw[i].y; centroid.z += raw[i].z; }
+    centroid.x /= nbones; centroid.y /= nbones; centroid.z /= nbones;
+
+    skel::Vec3f centered[256];
+    for (int i = 0; i < nbones; ++i) {
+        centered[i] = { raw[i].x - centroid.x, raw[i].y - centroid.y, raw[i].z - centroid.z };
+    }
+
+    // AnvilNext-family engines often store rigs with Y-up; the reference pose
+    // assumes Z-up. If Y range dominates, swap Y and Z.
+    float mn[3] = {  1e9f,  1e9f,  1e9f }, mx[3] = { -1e9f, -1e9f, -1e9f };
+    for (int i = 0; i < nbones; ++i) {
+        if (centered[i].x < mn[0]) mn[0] = centered[i].x;
+        if (centered[i].x > mx[0]) mx[0] = centered[i].x;
+        if (centered[i].y < mn[1]) mn[1] = centered[i].y;
+        if (centered[i].y > mx[1]) mx[1] = centered[i].y;
+        if (centered[i].z < mn[2]) mn[2] = centered[i].z;
+        if (centered[i].z > mx[2]) mx[2] = centered[i].z;
+    }
+    float sx = mx[0]-mn[0], sy = mx[1]-mn[1], sz = mx[2]-mn[2];
+    bool swapYZ = (sy > sz * 1.3f && sy > sx * 1.3f);
+    if (swapYZ) for (int i = 0; i < nbones; ++i) std::swap(centered[i].y, centered[i].z);
+
+    // Solve canonical bone layout against reference pose.
+    int idx[skel::BONE_COUNT];
+    float err = 0.f;
+    const char* pose = "?";
+    const int hits = skel::SolveLayoutMulti(centered, nbones, idx, err, &pose);
+    if (hits < 10) {
+        static uint64_t s_lastLog = 0;
+        uint64_t now_ms = skel::NowMicros() / 1000;
+        if (now_ms - s_lastLog > 3000) {
+            s_lastLog = now_ms;
+            skel::Log("[BONES] ByPosition: SolveLayout hits=%d err=%.3f (need >=10) ncand=%d spread=(%.2f,%.2f,%.2f)\n",
+                hits, err, nbones, sx, sy, sz);
+        }
+        return false;
+    }
+
+    // draw_pos in R6 is the character's FEET, not the pelvis. Palette bones
+    // are centered around the pelvis (z-min ~ -0.77, z-max ~ +0.4). If we
+    // just add draw_pos.z, the feet end up 0.77m BELOW the ground.
+    // Shift the palette so its LOWEST bone sits at draw_pos.z.
+    float min_z = 1e9f;
+    for (int i = 0; i < nbones; i++) if (centered[i].z < min_z) min_z = centered[i].z;
+
+    memset(&s, 0, sizeof(s));
+    for (int b = 0; b < skel::BONE_COUNT; ++b) {
+        if (idx[b] < 0 || idx[b] >= nbones) continue;
+        s.bones[b].x = centered[idx[b]].x + wx;
+        s.bones[b].y = centered[idx[b]].y + wy;
+        s.bones[b].z = centered[idx[b]].z + wz - min_z;  // feet-aligned
+        s.hasBone[b] = true;
+        s.total++;
+    }
+
+    if (s.total >= 8) {
+        static uint64_t s_lastLog = 0;
+        static uint64_t s_okCount = 0;
+        s_okCount++;
+        uint64_t now_ms = skel::NowMicros() / 1000;
+        if (now_ms - s_lastLog > 2000) {
+            s_lastLog = now_ms;
+            skel::Log("[BONES] ByPosition OK: entity=0x%llX draw=(%.1f,%.1f,%.1f) centroid=(%.1f,%.1f,%.1f) matchDist=%.2f hits=%d err=%.3f nbones=%d swapYZ=%d total OK=%llu\n",
+                (unsigned long long)entity, wx, wy, wz,
+                centroid.x, centroid.y, centroid.z,
+                mp.matchDist, hits, err, nbones, (int)swapYZ, (unsigned long long)s_okCount);
+        }
+        return true;
+    }
+    memset(&s, 0, sizeof(s));
+    return false;
+}
+
+// PATH B: legacy registry path via character-component tag lookup.
+// Kept as fallback for when position matching fails (e.g., stale draw_pos).
+static bool ReadSkeleton_ByRegistry(uint64_t entity, SkeletonBones& s) {
+    skel::Vec3f b[skel::BONE_COUNT];
+    uint32_t mask = 0;
+    if (!skel::GetBones(entity, b, mask) || !mask) return false;
+    memset(&s, 0, sizeof(s));
+    for (int i = 0; i < skel::BONE_COUNT; ++i) {
+        if (mask & (1u << i)) {
+            s.bones[i] = { b[i].x, b[i].y, b[i].z };
+            s.hasBone[i] = true;
+            s.total++;
+        }
+    }
+    return s.total >= 8;
+}
+
+// PATH C: auto-discovered char-comp bone read.
+// Once skad has locked charTag and worldMatOff by observing which tag+offset
+// produces a valid world matrix near draw_pos, we can read bones directly
+// from the character component without touching the registry or the (broken)
+// palette pointer scheme.
+static bool ReadSkeleton_ByAutoDiscover(uint64_t entity, float wx, float wy, float wz, SkeletonBones& s) {
+    // Feed each call as a vote toward discovery. Cheap when already locked.
+    skad::CastDiscoveryVote(entity, wx, wy, wz);
+    if (!skad::g_charTag.load()) return false;  // still hunting
+
+    uint64_t comp = skad::FindCharComp(entity);
+    if (!comp) return false;
+
+    skel::Vec3f raw[128];
+    int nbones = skad::ReadBonesFromComp(comp, raw, 128);
+    if (nbones < 8) {
+        static uint64_t s_lastLog = 0;
+        uint64_t now_ms = skel::NowMicros() / 1000;
+        if (now_ms - s_lastLog > 2000) {
+            s_lastLog = now_ms;
+            skel::Log("[BONES] AutoDiscover: ReadBonesFromComp returned %d bones for comp=0x%llX (need>=8)\n",
+                nbones, (unsigned long long)comp);
+        }
+        return false;
+    }
+
+    // Center bones, solve layout, translate by draw_pos.
+    skel::Vec3f centroid{};
+    for (int i = 0; i < nbones; i++) { centroid.x += raw[i].x; centroid.y += raw[i].y; centroid.z += raw[i].z; }
+    centroid.x /= nbones; centroid.y /= nbones; centroid.z /= nbones;
+
+    // Try BOTH orientations (Y-up vs Z-up) and pick the one with more hits.
+    // Havok is natively Y-up; our reference pose is Z-up. The old sy>sx*1.3
+    // heuristic misfired when arm-spread X was ~= Y.
+    auto build_centered = [&](bool swapYZ, skel::Vec3f* out) {
+        for (int i = 0; i < nbones; i++) {
+            out[i].x = raw[i].x - centroid.x;
+            if (swapYZ) {
+                out[i].y = raw[i].z - centroid.z;
+                out[i].z = raw[i].y - centroid.y;
+            } else {
+                out[i].y = raw[i].y - centroid.y;
+                out[i].z = raw[i].z - centroid.z;
+            }
+        }
+    };
+
+    skel::Vec3f centered_a[128], centered_b[128];
+    build_centered(false, centered_a);
+    build_centered(true,  centered_b);
+
+    int idx_a[skel::BONE_COUNT], idx_b[skel::BONE_COUNT];
+    float err_a = 0.f, err_b = 0.f;
+    const char* pose_a = "?"; const char* pose_b = "?";
+    const int hits_a = skel::SolveLayoutMulti(centered_a, nbones, idx_a, err_a, &pose_a);
+    const int hits_b = skel::SolveLayoutMulti(centered_b, nbones, idx_b, err_b, &pose_b);
+
+    bool useSwap = (hits_b > hits_a) || (hits_b == hits_a && err_b < err_a);
+    skel::Vec3f* centered = useSwap ? centered_b : centered_a;
+    int*         idx      = useSwap ? idx_b      : idx_a;
+    int          hits     = useSwap ? hits_b     : hits_a;
+    float        err      = useSwap ? err_b      : err_a;
+
+    // Compute spread for logging.
+    float mn[3] = {  1e9f,  1e9f,  1e9f }, mx[3] = { -1e9f, -1e9f, -1e9f };
+    for (int i = 0; i < nbones; i++) {
+        if (centered[i].x < mn[0]) mn[0] = centered[i].x; if (centered[i].x > mx[0]) mx[0] = centered[i].x;
+        if (centered[i].y < mn[1]) mn[1] = centered[i].y; if (centered[i].y > mx[1]) mx[1] = centered[i].y;
+        if (centered[i].z < mn[2]) mn[2] = centered[i].z; if (centered[i].z > mx[2]) mx[2] = centered[i].z;
+    }
+    float sx = mx[0]-mn[0], sy = mx[1]-mn[1], sz = mx[2]-mn[2];
+
+    // Real skeletons often have many duplicate/near-duplicate bones (finger,
+    // cloth, hair) plus the ~17 canonical bones. Accept as low as 4 canonical
+    // hits — head/neck/spine/hip alone gives a visible torso stick figure.
+    if (hits < 4) {
+        static uint64_t s_lastLog = 0;
+        uint64_t now_ms = skel::NowMicros() / 1000;
+        if (now_ms - s_lastLog > 2000) {
+            s_lastLog = now_ms;
+            skel::Log("[BONES] AutoDiscover: SolveLayout hits_a=%d hits_b=%d err_a=%.3f err_b=%.3f ncand=%d spread(chosen)=(%.2f,%.2f,%.2f) useSwap=%d\n",
+                hits_a, hits_b, err_a, err_b, nbones, sx, sy, sz, (int)useSwap);
+        }
+        return false;
+    }
+
+    // draw_pos in R6 is the character's FEET, not the pelvis. Palette bones
+    // are centered around the pelvis (z-min ~ -0.77, z-max ~ +0.4). If we
+    // just add draw_pos.z, the feet end up 0.77m BELOW the ground.
+    // Shift the palette so its LOWEST bone sits at draw_pos.z.
+    float min_z = 1e9f;
+    for (int i = 0; i < nbones; i++) if (centered[i].z < min_z) min_z = centered[i].z;
+
+    memset(&s, 0, sizeof(s));
+    for (int b = 0; b < skel::BONE_COUNT; ++b) {
+        if (idx[b] < 0 || idx[b] >= nbones) continue;
+        s.bones[b].x = centered[idx[b]].x + wx;
+        s.bones[b].y = centered[idx[b]].y + wy;
+        s.bones[b].z = centered[idx[b]].z + wz - min_z;  // feet-aligned
+        s.hasBone[b] = true;
+        s.total++;
+    }
+    if (s.total >= 4) {
+        static uint64_t s_lastLog = 0;
+        static uint64_t s_okCount = 0;
+        s_okCount++;
+        uint64_t now_ms = skel::NowMicros() / 1000;
+        if (now_ms - s_lastLog > 2000) {
+            s_lastLog = now_ms;
+            skel::Log("[BONES] AutoDiscover OK: entity=0x%llX comp=0x%llX total=%d hits=%d useSwap=%d total_ok=%llu\n",
+                (unsigned long long)entity, (unsigned long long)comp, s.total, hits, (int)useSwap, (unsigned long long)s_okCount);
+        }
+        return true;
+    }
+    {
+        static uint64_t s_lastLog = 0;
+        uint64_t now_ms = skel::NowMicros() / 1000;
+        if (now_ms - s_lastLog > 2000) {
+            s_lastLog = now_ms;
+            skel::Log("[BONES] AutoDiscover: post-map total=%d hits=%d useSwap=%d ncand=%d (rejected: <4)\n",
+                s.total, hits, (int)useSwap, nbones);
+        }
+    }
+    memset(&s, 0, sizeof(s));
+    return false;
+}
+
+// PATH ZERO: FEET-ANCHORED REFERENCE POSE — ROTATION-AWARE.
+// Bulletproof draw. Uses draw_pos as anchor. If we can grab the character's
+// world matrix via the ALREADY-WORKING skel::FindCharacterComponent chain (the
+// same path box ESP uses to know the char comp), we rotate the pose to face
+// the way the player is facing — makes the skeleton actually track player yaw
+// as they turn. If the char comp lookup fails, we degrade to an unrotated pose
+// at feet position — still visible, just always facing world +X.
+static bool ReadSkeleton_ByFeetAnchor(uint64_t entity, float wx, float wy, float wz, SkeletonBones& s) {
+    if (!(std::isfinite(wx) && std::isfinite(wy) && std::isfinite(wz))) return false;
+    if (fabsf(wx) < 0.01f && fabsf(wy) < 0.01f && fabsf(wz) < 0.01f) return false;
+
+    // Try to obtain a real rotation from the char comp's world matrix. Uses
+    // skel::FindCharacterComponent (backed by g_componentArrayOffset, which is
+    // already proven working since the entity pipeline uses it). This path
+    // doesn't depend on skad discovery.
+    float cs = 1.0f, sn = 0.0f;  // identity: cos(0)=1, sin(0)=0
+    bool haveRot = false;
+    if (skel::g_componentArrayOffset) {
+        uint64_t comp = skel::FindCharacterComponent(entity);
+        if (comp) {
+            skel::WorldMatrix wm = skel::ReadWorldMatrix(comp);
+            if (wm.valid) {
+                // Extract 2D yaw from the top-left of the 3x3 rotation block.
+                // wm.m[0][0] and wm.m[0][1] give the X-axis basis; that's cos/sin of yaw.
+                cs = wm.m[0][0];
+                sn = wm.m[0][1];
+                float len = sqrtf(cs*cs + sn*sn);
+                if (len > 0.5f && len < 2.0f) { cs /= len; sn /= len; haveRot = true; }
+                else { cs = 1.0f; sn = 0.0f; }
+            }
+        }
+    }
+
+    memset(&s, 0, sizeof(s));
+    for (const skel::RefBone& rb : skel::kReferencePose_Stand_A) {
+        // Rotate local (x, y) around Z by yaw, then translate.
+        float lx = rb.local.x, ly = rb.local.y, lz = rb.local.z;
+        float rx = lx * cs - ly * sn;
+        float ry = lx * sn + ly * cs;
+        s.bones[rb.bone].x = wx + rx;
+        s.bones[rb.bone].y = wy + ry;
+        s.bones[rb.bone].z = wz + lz;
+        s.hasBone[rb.bone] = true;
+        s.total++;
+    }
+    (void)haveRot;  // rotation applied if available, identity otherwise
+    return s.total > 0;
+}
+
+// PATH D: WORLD-MATRIX-ORIENTED SYNTHETIC POSE.
+// Once we've locked the character-comp world matrix (tag+offset via skad),
+// every character has a valid rotation matrix at that location. We apply
+// the matrix to a reference pose. This gives us a POSED skeleton (correct
+// orientation, correct height) for EVERY player — animation-agnostic but
+// visually correct and universally available.
+static bool ReadSkeleton_ByWorldMatrixPose(uint64_t entity, float wx, float wy, float wz, SkeletonBones& s) {
+    if (!skad::g_charTag.load() || !skad::g_worldMatOff.load()) {
+        skad::CastDiscoveryVote(entity, wx, wy, wz);
+        return false;
+    }
+    uint64_t comp = skad::FindCharComp(entity);
+    if (!comp) return false;
+
+    float m[16];
+    if (!skad::ReadWorldMatrix(comp, m)) return false;
+
+    // Prefer the world matrix's translation as the anchor (more accurate than
+    // draw_pos for character root). Fall back to draw_pos if invalid.
+    float ax = m[12], ay = m[13], az = m[14];
+    if (!std::isfinite(ax) || !std::isfinite(ay) || !std::isfinite(az)) { ax = wx; ay = wy; az = wz; }
+
+    memset(&s, 0, sizeof(s));
+    // Use Stand_A as the reference (most neutral). The world matrix supplies
+    // rotation, so bones face the correct direction.
+    for (const skel::RefBone& rb : skel::kReferencePose_Stand_A) {
+        float ox, oy, oz;
+        skad::TransformByWM(m, rb.local.x, rb.local.y, rb.local.z, ox, oy, oz);
+        s.bones[rb.bone].x = ox;
+        s.bones[rb.bone].y = oy;
+        s.bones[rb.bone].z = oz;
+        s.hasBone[rb.bone] = true;
+        s.total++;
+    }
+    static uint64_t s_lastLog = 0;
+    static uint64_t s_okCount = 0;
+    s_okCount++;
+    uint64_t now_ms = skel::NowMicros() / 1000;
+    if (now_ms - s_lastLog > 2000) {
+        s_lastLog = now_ms;
+        skel::Log("[BONES] WMPose OK: entity=0x%llX comp=0x%llX anchor=(%.1f,%.1f,%.1f) total_ok=%llu\n",
+            (unsigned long long)entity, (unsigned long long)comp, ax, ay, az, (unsigned long long)s_okCount);
+    }
+    return true;
+}
+
+// PATH E: DIRECT COMP-IDX LOOKUP + HASH-BASED BONE DISCOVERY.
+// Uses the skeleton xref's compIdx to find the character component directly,
+// then scans for known bone hashes to identify exact bone positions.
+// Falls back to iterating all components when compIdxOff is unknown.
+static bool ReadSkeleton_Direct(uint64_t entity, float wx, float wy, float wz, SkeletonBones& s) {
+    if (!skel::ValidPtr(entity)) { skel::Log("[BONES-D] bad entity\n"); return false; }
+    if (!(std::isfinite(wx) && std::isfinite(wy) && std::isfinite(wz))) return false;
+    if (fabsf(wx) < 0.01f && fabsf(wy) < 0.01f && fabsf(wz) < 0.01f) return false;
+
+    // Use FindCharacterComponent which has brute-force fallback for offset discovery
+    uint64_t comp = skel::FindCharacterComponent(entity);
+    if (!comp) {
+        skel::Log("[BONES-D] no char comp for entity=0x%llX\n", (unsigned long long)entity);
+        return false;
+    }
+
+    {
+        int hash_map[skel::BONE_COUNT];
+        skel::Vec3f raw[256];
+        int nbones = skad::ScanCompForBonesHash(comp, raw, 256, hash_map);
+        if (nbones < 8) {
+            skel::Log("[BONES-D] ScanCompForBonesHash returned %d for comp=0x%llX\n",
+                nbones, (unsigned long long)comp);
+            return false;
+        }
+
+        skel::Vec3f centroid{};
+        for (int i = 0; i < nbones; i++) {
+            centroid.x += raw[i].x; centroid.y += raw[i].y; centroid.z += raw[i].z;
+        }
+        centroid.x /= nbones; centroid.y /= nbones; centroid.z /= nbones;
+
+        skel::Vec3f centered[256];
+        for (int i = 0; i < nbones; i++) {
+            centered[i] = { raw[i].x - centroid.x, raw[i].y - centroid.y, raw[i].z - centroid.z };
+        }
+
+        float mn[3] = { 1e9f, 1e9f, 1e9f }, mx[3] = { -1e9f, -1e9f, -1e9f };
+        for (int i = 0; i < nbones; i++) {
+            if (centered[i].x < mn[0]) mn[0] = centered[i].x;
+            if (centered[i].x > mx[0]) mx[0] = centered[i].x;
+            if (centered[i].y < mn[1]) mn[1] = centered[i].y;
+            if (centered[i].y > mx[1]) mx[1] = centered[i].y;
+            if (centered[i].z < mn[2]) mn[2] = centered[i].z;
+            if (centered[i].z > mx[2]) mx[2] = centered[i].z;
+        }
+        float sx = mx[0]-mn[0], sy = mx[1]-mn[1], sz = mx[2]-mn[2];
+        bool swapYZ = (sy > sz * 1.3f && sy > sx * 1.3f);
+        if (swapYZ) {
+            for (int i = 0; i < nbones; i++) {
+                float tmp = centered[i].y;
+                centered[i].y = centered[i].z;
+                centered[i].z = tmp;
+            }
+        }
+
+        float wm[16];
+        bool haveWM = skad::ScanCompForWorldMatrix(comp, wx, wy, wz, wm);
+
+        float min_z = 1e9f;
+        for (int i = 0; i < nbones; i++) {
+            if (centered[i].z < min_z) min_z = centered[i].z;
+        }
+
+        memset(&s, 0, sizeof(s));
+        for (int b = 0; b < skel::BONE_COUNT; b++) {
+            int ri = hash_map[b];
+            if (ri < 0 || ri >= nbones) continue;
+            float bx = centered[ri].x;
+            float by = centered[ri].y;
+            float bz = centered[ri].z - min_z;
+            if (haveWM) {
+                float ox = bx*wm[0]+by*wm[4]+bz*wm[8];
+                float oy = bx*wm[1]+by*wm[5]+bz*wm[9];
+                float oz = bx*wm[2]+by*wm[6]+bz*wm[10];
+                bx=ox; by=oy; bz=oz;
+            }
+            s.bones[b].x = bx+wx; s.bones[b].y = by+wy; s.bones[b].z = bz+wz;
+            s.hasBone[b] = true; s.total++;
+        }
+
+        if (s.total >= 4) {
+            static uint64_t s_okCount = 0;
+            s_okCount++;
+            skel::Log("[BONES] Direct OK: entity=0x%llX comp=0x%llX total=%d raw=%d haveWM=%d ok=%llu\n",
+                (unsigned long long)entity, (unsigned long long)comp, s.total, nbones, (int)haveWM, (unsigned long long)s_okCount);
+            return true;
+        }
+    }
+
+    skel::Log("[BONES-D] all paths exhausted for entity=0x%llX\n", (unsigned long long)entity);
+    return false;
+}
+
+static bool ReadSkeleton_Impl(uint64_t entity, float wx, float wy, float wz, SkeletonBones& s) {
+    memset(&s, 0, sizeof(s));
+    if (!skel::ValidPtr(entity)) return false;
+
+    static uint64_t s_diagCount = 0;
+    static uint64_t s_lastDiag_ms = 0;
+    uint64_t now_ms = skel::NowMicros() / 1000;
+    bool logDiag = (s_diagCount < 5 || (now_ms - s_lastDiag_ms > 5000));
+    if (logDiag) { s_diagCount++; s_lastDiag_ms = now_ms; }
+
+    if (logDiag) {
+        skel::Log("[BONES-DBG] entity=0x%llX draw=(%.1f,%.1f,%.1f) compArrOff=+0x%llX charTag=0x%X wmOff=+0x%X\n",
+            (unsigned long long)entity, wx, wy, wz,
+            (unsigned long long)skel::g_componentArrayOffset,
+            skad::g_charTag.load(), skad::g_worldMatOff.load());
+    }
+
+    // Path order: real-bone attempts, then guaranteed synthetic silhouette.
+    // Direct uses hash-based animated bone lookup (best quality).
+    // Registry (GetBones) has world-space detection + relaxed tolerance.
+    // AutoDiscover/Position use layout solver as fallback.
+    // WMPose is the bulletproof synthetic fallback.
+    // FeetAnchor is the absolute last resort (static reference pose).
+
+    if (ReadSkeleton_Direct(entity, wx, wy, wz, s)) return true;
+    memset(&s, 0, sizeof(s));
+
+    if (ReadSkeleton_ByRegistry(entity, s)) return true;
+    memset(&s, 0, sizeof(s));
+
+    if (ReadSkeleton_ByAutoDiscover(entity, wx, wy, wz, s)) return true;
+    memset(&s, 0, sizeof(s));
+
+    if (ReadSkeleton_ByPosition(entity, wx, wy, wz, s)) return true;
+    memset(&s, 0, sizeof(s));
+
+    if (ReadSkeleton_ByWorldMatrixPose(entity, wx, wy, wz, s)) return true;
+    memset(&s, 0, sizeof(s));
+
+    // BULLETPROOF: no discovery, no palette, no world matrix. Plants Stand_A
+    // reference pose at draw_pos. If the box draws, this draws. Always.
+    if (ReadSkeleton_ByFeetAnchor(entity, wx, wy, wz, s)) return true;
+    memset(&s, 0, sizeof(s));
+
+    return false;
+}
+
+static bool ReadSkeleton(uint64_t entity, float wx, float wy, float wz, SkeletonBones& s) {
+    if (!skel::ValidPtr(entity)) { memset(&s, 0, sizeof(s)); return false; }
+
+    const uint64_t now_ms = skel::NowMicros() / 1000;
+
+    {
+        std::lock_guard<std::mutex> lk(g_boneCacheMtx);
+        auto it = g_boneCache.find(entity);
+        if (it != g_boneCache.end()) {
+            const bool wasOk = it->second.bones.total > 0;
+            const uint64_t ttl = wasOk ? kBoneCacheOkTTL : kBoneCacheFailTTL;
+            if (now_ms - it->second.last_update_ms < ttl) {
+                s = it->second.bones;
+                return wasOk;
+            }
+        }
+    }
+
+    const bool ok = ReadSkeleton_Impl(entity, wx, wy, wz, s);
+
+    {
+        std::lock_guard<std::mutex> lk(g_boneCacheMtx);
+        auto& slot = g_boneCache[entity];
+
+        // Temporal smoothing: blend new bones with previous frame's bones
+        // to reduce jitter. Use exponential moving average with alpha=0.4
+        // (favors new data but smooths frame-to-frame noise).
+        if (ok && slot.has_prev && slot.bones.total > 0 && s.total > 0) {
+            constexpr float kSmoothAlpha = 0.4f;
+            const SkeletonBones& prev = slot.bones;
+            for (int b = 0; b < skel::BONE_COUNT; ++b) {
+                if (!s.hasBone[b] || !prev.hasBone[b]) continue;
+                s.bones[b].x = prev.bones[b].x * (1.f - kSmoothAlpha) + s.bones[b].x * kSmoothAlpha;
+                s.bones[b].y = prev.bones[b].y * (1.f - kSmoothAlpha) + s.bones[b].y * kSmoothAlpha;
+                s.bones[b].z = prev.bones[b].z * (1.f - kSmoothAlpha) + s.bones[b].z * kSmoothAlpha;
+            }
+        }
+
+        slot.prev_bones        = slot.bones;
+        slot.has_prev          = (slot.bones.total > 0);
+        slot.bones             = s;
+        slot.last_update_ms    = now_ms;
+        slot.consecutive_fails = ok ? 0 : (uint8_t)std::min<int>(255, slot.consecutive_fails + 1);
+        if (g_boneCache.size() > 128) {
+            for (auto it = g_boneCache.begin(); it != g_boneCache.end();) {
+                if (now_ms - it->second.last_update_ms > 3000) it = g_boneCache.erase(it);
+                else ++it;
+            }
+        }
+    }
+    return ok;
+}
+
+static Vec3B GetHeadBonePos(const SkeletonBones& s) {
+    if (s.hasBone[skel::BONE_HEAD]) return s.bones[skel::BONE_HEAD];
+    if (s.hasBone[skel::BONE_NECK]) return s.bones[skel::BONE_NECK];
+    return { 0.f, 0.f, 0.f };
+}
