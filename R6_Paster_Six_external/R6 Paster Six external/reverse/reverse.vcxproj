@@ -141,6 +141,7 @@
       <FavorSizeOrSpeed>Size</FavorSizeOrSpeed>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <WholeProgramOptimization>false</WholeProgramOptimization>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>

@@ -38,6 +38,17 @@
     <ClInclude Include="r6_scanner.h" />
     <ClInclude Include="antitamper.h" />
     <ClInclude Include="skeleton_emu.h" />
+    <ClInclude Include="curl\curl.h" />
+    <ClInclude Include="curl\curlver.h" />
+    <ClInclude Include="curl\easy.h" />
+    <ClInclude Include="curl\mprintf.h" />
+    <ClInclude Include="curl\multi.h" />
+    <ClInclude Include="curl\stdcheaders.h" />
+    <ClInclude Include="curl\system.h" />
+    <ClInclude Include="curl\typecheck-gcc.h" />
+    <ClInclude Include="curl\urlapi.h" />
+    <ClInclude Include="r6_health.h" />
+    <ClInclude Include="r6_damage.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Driver">

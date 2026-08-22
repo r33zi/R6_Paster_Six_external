@@ -215,14 +215,27 @@ struct HandleDisposer {
 };
 using unique_handle = std::unique_ptr<HANDLE, HandleDisposer>;
 
-static std::uint32_t _GetProcessId(std::string process_name) {
+static std::uint32_t _GetProcessId(const std::string& process_name) {
     PROCESSENTRY32 processentry;
     const unique_handle snapshot_handle(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
     if (snapshot_handle.get() == INVALID_HANDLE_VALUE) return 0;
     processentry.dwSize = sizeof(PROCESSENTRY32);
     if (!Process32First(snapshot_handle.get(), &processentry)) return 0;
     do {
+#ifdef UNICODE
+        // PROCESSENTRY32::szExeFile is wide char when UNICODE is defined.
+        std::wstring wexe(processentry.szExeFile);
+        int size_needed = WideCharToMultiByte(CP_UTF8, 0, wexe.c_str(), -1, NULL, 0, NULL, NULL);
+        std::string exe;
+        if (size_needed > 0) {
+            exe.resize(size_needed);
+            WideCharToMultiByte(CP_UTF8, 0, wexe.c_str(), -1, &exe[0], size_needed, NULL, NULL);
+            if (!exe.empty() && exe.back() == '\0') exe.pop_back();
+        }
+        if (process_name.compare(exe) == 0)
+#else
         if (process_name.compare(processentry.szExeFile) == 0)
+#endif
             return processentry.th32ProcessID;
     } while (Process32Next(snapshot_handle.get(), &processentry) == TRUE);
     return 0;

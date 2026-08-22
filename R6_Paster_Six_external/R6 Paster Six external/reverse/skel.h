@@ -1429,13 +1429,13 @@ namespace skel
     }
 
 
-    inline uint64_t g_entityRigOff = 0;
-    inline uint32_t g_entityRigStride = 0;
-    inline uint32_t g_entityRigTrans = 0;
-    inline uint32_t g_entityRigCount = 0;
-    inline bool     g_entityRigWorld = false;
-    inline bool     g_entityRigTried = false;
-    inline DWORD    g_entityRigAttempt = 0;
+    extern uint64_t g_entityRigOff;
+    extern uint32_t g_entityRigStride;
+    extern uint32_t g_entityRigTrans;
+    extern uint32_t g_entityRigCount;
+    extern bool     g_entityRigWorld;
+    extern bool     g_entityRigTried;
+    extern DWORD    g_entityRigAttempt;
 
     inline bool ScanEntityForRig(uint64_t entity)
     {
@@ -1697,7 +1697,7 @@ namespace skel
         return false;
     }
 
-    inline uint64_t g_lastDbg_ms = 0;
+    extern uint64_t g_lastDbg_ms;
 
     inline bool GetBonesDirect(uint64_t entity, Vec3f out_world[BONE_COUNT], uint32_t& out_mask)
     {

@@ -23,10 +23,13 @@
  ***************************************************************************/
 
 #include <sys/types.h>
+#include <stdio.h>
 
 size_t fread(void *, size_t, size_t, FILE *);
 size_t fwrite(const void *, size_t, size_t, FILE *);
 
+
+Explanation: Add <stdio.h> include so FILE is defined before use, resolving the "identifier \"FILE\" is undefined" error.
 int strcasecmp(const char *, const char *);
 int strncasecmp(const char *, const char *, size_t);
 
