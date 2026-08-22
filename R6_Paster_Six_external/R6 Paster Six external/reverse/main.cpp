@@ -333,17 +333,13 @@ static bool RunAuthentication() {
     keyauth_url.clear(); keyauth_path.clear();
 
     for (int attempt = 1; attempt <= 3; attempt++) {
-        std::string username, password;
-        printf("[*] Username: ");
-        username = ReadConsoleLine();
-        printf("[*] Password: ");
-        password = ReadConsoleLine('*');
+        printf("[*] License key: ");
+        const std::string key = ReadConsoleLine();
 
         printf("[.] Authenticating...\n");
-        KeyAuthApp.login(username, password);
+        KeyAuthApp.license(key);
         if (KeyAuthApp.response.success) {
-            printf("[+] Welcome %s\n", KeyAuthApp.user_data.username.empty()
-                ? username.c_str() : KeyAuthApp.user_data.username.c_str());
+            printf("[+] Welcome %s\n", KeyAuthApp.user_data.username.c_str());
             printf("[+] HWID: %s\n", KeyAuthApp.user_data.hwid.c_str());
             for (const auto& sub : KeyAuthApp.user_data.subscriptions)
                 printf("[+] %s expires in %s\n", sub.name.c_str(),
