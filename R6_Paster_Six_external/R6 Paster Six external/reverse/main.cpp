@@ -676,11 +676,11 @@ void render() {
         ImGui::Indent(kPadLeft);
         if (m_pFontDisplay) ImGui::PushFont(m_pFontDisplay);
         ImGui::PushStyleColor(ImGuiCol_Text, kText);
-        ImGui::TextUnformatted(streamerMode ? "system" : "profound");
+        ImGui::TextUnformatted(streamerMode ? "system" : "Oxium");
         ImGui::PopStyleColor();
         if (m_pFontDisplay) ImGui::PopFont();
         ImGui::PushStyleColor(ImGuiCol_Text, kTextDim);
-        ImGui::TextUnformatted(streamerMode ? "utilities" : "by rac0");
+        ImGui::TextUnformatted(streamerMode ? "utilities" : "R6 external");
         ImGui::PopStyleColor();
         ImGui::Unindent(kPadLeft);
 
