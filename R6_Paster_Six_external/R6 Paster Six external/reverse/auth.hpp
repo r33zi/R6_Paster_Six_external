@@ -7,11 +7,14 @@
 #include <iomanip>
 #include "json.hpp"
 
-#ifdef AUTHFUSION_USE_CURL
-#include <curl/curl.h>
-#else
+#ifdef AUTHFUSION_USE_WINHTTP
 #include <winhttp.h>
 #pragma comment(lib, "winhttp.lib")
+#else
+#ifndef CURL_STATICLIB
+#define CURL_STATICLIB
+#endif
+#include "curl/curl.h"
 #endif
 
 class AuthFusion {
@@ -20,7 +23,7 @@ private:
     std::string secret = "3c99f04ac7fb08579523ff2c584283f4";
     std::string base_url = "https://nxrauth-3x4c.onrender.com";
 
-#ifdef AUTHFUSION_USE_CURL
+#ifndef AUTHFUSION_USE_WINHTTP
     static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
         ((std::string*)userp)->append((char*)contents, size * nmemb);
         return size * nmemb;
