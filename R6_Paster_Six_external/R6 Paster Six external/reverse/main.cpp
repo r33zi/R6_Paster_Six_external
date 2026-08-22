@@ -16,6 +16,7 @@
 #include "skeleton_emu.h"
 #include "antitamper.h"
 #include "auth.hpp"
+#include <conio.h>
 
 std::atomic<bool> g_manualInMatch{false};
 
@@ -290,14 +291,22 @@ static ImU32 GetFovColor() {
     return ColorToU32(fovCircleColor);
 }
 
-static std::string ReadHiddenLine() {
+// Reads a line key by key so input stays visible; pass a mask ('*') for secrets.
+static std::string ReadConsoleLine(char mask = 0) {
     std::string value;
-    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
-    DWORD mode = 0;
-    bool restore = GetConsoleMode(input, &mode) != FALSE;
-    if (restore) SetConsoleMode(input, mode & ~ENABLE_ECHO_INPUT);
-    std::getline(std::cin, value);
-    if (restore) SetConsoleMode(input, mode);
+    for (;;) {
+        const int key = _getch();
+        if (key == '\r' || key == '\n') break;
+        if (key == 3) exit(0);                       // Ctrl+C
+        if (key == '\b' || key == 127) {
+            if (!value.empty()) { value.pop_back(); printf("\b \b"); }
+            continue;
+        }
+        if (key == 0 || key == 0xE0) { _getch(); continue; }  // arrows / function keys
+        if (key < 32) continue;
+        value += (char)key;
+        putchar(mask ? mask : key);
+    }
     printf("\n");
     return value;
 }
@@ -309,9 +318,9 @@ static bool RunAuthentication() {
     for (int attempt = 1; attempt <= 3; attempt++) {
         std::string username, password;
         printf("[*] Username: ");
-        std::getline(std::cin, username);
+        username = ReadConsoleLine();
         printf("[*] Password: ");
-        password = ReadHiddenLine();
+        password = ReadConsoleLine('*');
 
         printf("[.] Authenticating...\n");
         AuthFusion::result res = auth.login(username, password, hwid);
