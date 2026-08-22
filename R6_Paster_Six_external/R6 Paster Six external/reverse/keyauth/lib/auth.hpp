@@ -1,5 +1,6 @@
 #include <includes.hpp>
-#include <xorstr.hpp>
+#include "xorstr.hpp" // ensure consistent include path to avoid duplicate includes
+
 #include <random>
 #include <chrono>
 #include <atomic>
@@ -181,18 +182,18 @@ namespace KeyAuth {
 		
 
 		void load_user_data(nlohmann::json data) {
-			const std::string key_username = XorStr("username");
-			const std::string key_ip = XorStr("ip");
-			const std::string key_hwid = XorStr("hwid");
-			const std::string key_created = XorStr("createdate");
-			const std::string key_lastlogin = XorStr("lastlogin");
-			const std::string key_subs = XorStr("subscriptions");
-			const std::string key_sub_name = XorStr("subscription");
-			const std::string key_sub_expiry = XorStr("expiry");
+			const std::string key_username = std::string("username");
+			const std::string key_ip = std::string("ip");
+			const std::string key_hwid = std::string("hwid");
+			const std::string key_created = std::string("createdate");
+			const std::string key_lastlogin = std::string("lastlogin");
+			const std::string key_subs = std::string("subscriptions");
+			const std::string key_sub_name = std::string("subscription");
+			const std::string key_sub_expiry = std::string("expiry");
 			api::user_data.username = data.value(key_username, "");
 			api::user_data.ip = data.value(key_ip, "");
 			if (!data.contains(key_hwid) || data[key_hwid].is_null()) {
-				api::user_data.hwid = XorStr("none");
+				api::user_data.hwid = std::string("none");
 			}
 			else {
 				api::user_data.hwid = data[key_hwid];
@@ -214,32 +215,32 @@ namespace KeyAuth {
 		}
 
 		void load_app_data(nlohmann::json data) {
-			api::app_data.numUsers = data[XorStr("numUsers")];
-			api::app_data.numOnlineUsers = data[XorStr("numOnlineUsers")];
-			api::app_data.numKeys = data[XorStr("numKeys")];
-			api::app_data.version = data[XorStr("version")];
-			api::app_data.customerPanelLink = data[XorStr("customerPanelLink")];
+			api::app_data.numUsers = data["numUsers"];
+			api::app_data.numOnlineUsers = data["numOnlineUsers"];
+			api::app_data.numKeys = data["numKeys"];
+			api::app_data.version = data["version"];
+			api::app_data.customerPanelLink = data["customerPanelLink"];
 		}
 
 		void load_response_data(nlohmann::json data) {
-			api::response.success = data[XorStr("success")];
+			api::response.success = data["success"];
 			api::response.message = data["message"];
 			api::response.isPaid = false;
 
-			if (data.contains(XorStr("role").c_str()) && data[XorStr("role")] != XorStr("tester").c_str() && data[XorStr("role")] != XorStr("not_checked").c_str()) {
+			if (data.contains("role") && data["role"] != "tester" && data["role"] != "not_checked") {
 				api::response.isPaid = true;
 			}
 		}
 
 		void load_channel_data(nlohmann::json data) {
-			api::response.success = data[XorStr("success")]; // intentional. Possibly trick a reverse engineer into thinking this string is for login function
+			api::response.success = data["success"]; // intentional. Possibly trick a reverse engineer into thinking this string is for login function
 			api::response.message = data["message"];
 			api::response.channeldata.clear(); //If you do not delete the data before pushing it, the data will be repeated. github.com/TTakaTit
 			if (!data.contains("messages") || !data["messages"].is_array()) {
 				return; // avoid invalid server payload crash. -nigel
 			}
-			const std::string key_author = XorStr("author");
-			const std::string key_timestamp = XorStr("timestamp");
+			const std::string key_author = std::string("author");
+			const std::string key_timestamp = std::string("timestamp");
 			for (const auto& sub : data["messages"]) {
 				if (!sub.is_object())
 					continue;

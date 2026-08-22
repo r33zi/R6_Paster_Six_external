@@ -1,7 +1,9 @@
 #include "pasterx.h"
 #include "driver.h"
 #include "d3d9_x.h"
-#include "xor.hpp"
+#include "keyauth/lib/xorstr.hpp" // use canonical XorStr implementation to avoid duplicate-template conflicts
+
+
 #include <dwmapi.h>
 #include <vector>
 #include <random>

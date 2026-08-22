@@ -8,7 +8,7 @@ using json = nlohmann::json;
 std::string ReadFromJson(std::string path, std::string section)
 {
 	if (!std::filesystem::exists(path))
-		return E("File Not Found").decrypt();
+		return "";
 	std::ifstream file(path);
 	json data = json::parse(file);
 	return data[section];
@@ -17,7 +17,7 @@ std::string ReadFromJson(std::string path, std::string section)
 bool CheckIfJsonKeyExists(std::string path, std::string section)
 {
 	if (!std::filesystem::exists(path))
-		return E("File Not Found").decrypt();
+		return false;
 	std::ifstream file(path);
 	json data = json::parse(file);
 	return data.contains(section);
