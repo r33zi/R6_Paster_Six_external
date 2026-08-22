@@ -15,7 +15,8 @@
 #include "r6_entities.h"
 #include "skeleton_emu.h"
 #include "antitamper.h"
-#include "auth.hpp"
+#include "keyauth/auth.hpp"
+#include "keyauth/skStr.h"
 #include <conio.h>
 
 std::atomic<bool> g_manualInMatch{false};
@@ -311,9 +312,25 @@ static std::string ReadConsoleLine(char mask = 0) {
     return value;
 }
 
+// KeyAuth application details — copy these from https://keyauth.cc/app/
+static std::string keyauth_name = skCrypt("name").decrypt();
+static std::string keyauth_ownerid = skCrypt("ownerid").decrypt();
+static std::string keyauth_version = skCrypt("1.0").decrypt();
+static std::string keyauth_url = skCrypt("https://keyauth.win/api/1.3/").decrypt();
+static std::string keyauth_path = skCrypt("").decrypt();
+
+static KeyAuth::api KeyAuthApp(keyauth_name, keyauth_ownerid, keyauth_version, keyauth_url, keyauth_path);
+
 static bool RunAuthentication() {
-    AuthFusion auth;
-    const std::string hwid = AuthFusion::get_hwid();
+    printf("[.] Connecting to KeyAuth...\n");
+    KeyAuthApp.init();
+    if (!KeyAuthApp.response.success) {
+        printf("[!] Init failed: %s\n", KeyAuthApp.response.message.c_str());
+        return false;
+    }
+    // Wipe the app details from memory now that the session is established.
+    keyauth_name.clear(); keyauth_ownerid.clear(); keyauth_version.clear();
+    keyauth_url.clear(); keyauth_path.clear();
 
     for (int attempt = 1; attempt <= 3; attempt++) {
         std::string username, password;
@@ -323,14 +340,19 @@ static bool RunAuthentication() {
         password = ReadConsoleLine('*');
 
         printf("[.] Authenticating...\n");
-        AuthFusion::result res = auth.login(username, password, hwid);
-        if (res.success) {
-            printf("[+] Welcome %s\n", res.username.empty() ? username.c_str() : res.username.c_str());
-            if (!res.expiry.empty()) printf("[+] Subscription expires: %s\n", res.expiry.c_str());
+        KeyAuthApp.login(username, password);
+        if (KeyAuthApp.response.success) {
+            printf("[+] Welcome %s\n", KeyAuthApp.user_data.username.empty()
+                ? username.c_str() : KeyAuthApp.user_data.username.c_str());
+            printf("[+] HWID: %s\n", KeyAuthApp.user_data.hwid.c_str());
+            for (const auto& sub : KeyAuthApp.user_data.subscriptions)
+                printf("[+] %s expires in %s\n", sub.name.c_str(),
+                    KeyAuth::api::expiry_remaining(sub.expiry).c_str());
             return true;
         }
 
-        printf("[!] Login failed: %s\n", res.message.empty() ? "unknown error" : res.message.c_str());
+        printf("[!] Login failed: %s\n", KeyAuthApp.response.message.empty()
+            ? "unknown error" : KeyAuthApp.response.message.c_str());
         if (attempt < 3) printf("[.] Attempts left: %d\n\n", 3 - attempt);
     }
     return false;
@@ -344,7 +366,7 @@ int main(int argc, const char* argv[]) {
     printf("========================================\n");
     printf("  Oxium R6 external\n");
     printf("========================================\n\n");
-    printf("[*] HWID: %s\n\n", AuthFusion::get_hwid().c_str());
+    printf("[*] HWID: %s\n\n", utils::get_hwid().c_str());
     if (!RunAuthentication()) {
         printf("[!] Authentication failed.\n");
         system("pause");
