@@ -19,6 +19,7 @@
     <ClCompile Include="main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="auth.hpp" />
     <ClInclude Include="ud.h" />
     <ClInclude Include="Keybind.h" />
     <ClInclude Include="offsets.h" />

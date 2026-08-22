@@ -15,6 +15,7 @@
 #include "r6_entities.h"
 #include "skeleton_emu.h"
 #include "antitamper.h"
+#include "auth.hpp"
 
 std::atomic<bool> g_manualInMatch{false};
 
@@ -289,6 +290,43 @@ static ImU32 GetFovColor() {
     return ColorToU32(fovCircleColor);
 }
 
+static std::string ReadHiddenLine() {
+    std::string value;
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode = 0;
+    bool restore = GetConsoleMode(input, &mode) != FALSE;
+    if (restore) SetConsoleMode(input, mode & ~ENABLE_ECHO_INPUT);
+    std::getline(std::cin, value);
+    if (restore) SetConsoleMode(input, mode);
+    printf("\n");
+    return value;
+}
+
+static bool RunAuthentication() {
+    AuthFusion auth;
+    const std::string hwid = AuthFusion::get_hwid();
+
+    for (int attempt = 1; attempt <= 3; attempt++) {
+        std::string username, password;
+        printf("[*] Username: ");
+        std::getline(std::cin, username);
+        printf("[*] Password: ");
+        password = ReadHiddenLine();
+
+        printf("[.] Authenticating...\n");
+        AuthFusion::result res = auth.login(username, password, hwid);
+        if (res.success) {
+            printf("[+] Welcome %s\n", res.username.empty() ? username.c_str() : res.username.c_str());
+            if (!res.expiry.empty()) printf("[+] Subscription expires: %s\n", res.expiry.c_str());
+            return true;
+        }
+
+        printf("[!] Login failed: %s\n", res.message.empty() ? "unknown error" : res.message.c_str());
+        if (attempt < 3) printf("[.] Attempts left: %d\n\n", 3 - attempt);
+    }
+    return false;
+}
+
 int main(int argc, const char* argv[]) {
     px33_init_antitamper();
     system("color 3");
@@ -297,6 +335,13 @@ int main(int argc, const char* argv[]) {
     printf("========================================\n");
     printf("  profound  //  by rac0\n");
     printf("========================================\n\n");
+    printf("[*] HWID: %s\n\n", AuthFusion::get_hwid().c_str());
+    if (!RunAuthentication()) {
+        printf("[!] Authentication failed.\n");
+        system("pause");
+        return 1;
+    }
+    printf("\n");
     printf("[+] Initializing mouse controller...\n");
     MouseController::Init();
     printf("[+] Mouse controller OK\n");

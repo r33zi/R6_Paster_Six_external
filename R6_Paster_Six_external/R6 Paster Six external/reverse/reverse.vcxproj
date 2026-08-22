@@ -160,6 +160,7 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="auth.hpp" />
     <ClInclude Include="driver.h" />
     <ClInclude Include="driverdefs.h" />
     <ClInclude Include="FVector.h" />
