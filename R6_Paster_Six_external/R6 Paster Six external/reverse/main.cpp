@@ -15,6 +15,7 @@
 #include "r6_entities.h"
 #include "skeleton_emu.h"
 #include "antitamper.h"
+#include "authfusion.hpp"
 
 std::atomic<bool> g_manualInMatch{false};
 
@@ -300,6 +301,15 @@ int main(int argc, const char* argv[]) {
     printf("[+] Initializing mouse controller...\n");
     MouseController::Init();
     printf("[+] Mouse controller OK\n");
+
+    printf("\n[*] Step 0: Authentication\n");
+    printf("[.] HWID: %s\n", AuthFusion::hwid().c_str());
+    if (!authfusion::gate().success) {
+        printf("[!] Authentication failed!\n");
+        system("pause");
+        return 1;
+    }
+
     CreateThread(NULL, NULL, Menuthread, NULL, NULL, NULL);
     printf("[+] Menu thread started\n");
 

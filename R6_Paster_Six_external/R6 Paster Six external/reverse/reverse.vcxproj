@@ -176,6 +176,7 @@
     <ClInclude Include="skeleton_emu.h" />
     <ClInclude Include="r6_health.h" />
     <ClInclude Include="r6_damage.h" />
+    <ClInclude Include="authfusion.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
