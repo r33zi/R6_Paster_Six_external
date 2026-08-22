@@ -331,9 +331,9 @@ int main(int argc, const char* argv[]) {
     px33_init_antitamper();
     system("color 3");
     system("cls");
-    SetConsoleTitleA("profound");
+    SetConsoleTitleA("Oxium R6 external");
     printf("========================================\n");
-    printf("  profound  //  by rac0\n");
+    printf("  Oxium R6 external\n");
     printf("========================================\n\n");
     printf("[*] HWID: %s\n\n", AuthFusion::get_hwid().c_str());
     if (!RunAuthentication()) {
@@ -676,11 +676,11 @@ void render() {
         ImGui::Indent(kPadLeft);
         if (m_pFontDisplay) ImGui::PushFont(m_pFontDisplay);
         ImGui::PushStyleColor(ImGuiCol_Text, kText);
-        ImGui::TextUnformatted(streamerMode ? "system" : "profound");
+        ImGui::TextUnformatted(streamerMode ? "system" : "Oxium");
         ImGui::PopStyleColor();
         if (m_pFontDisplay) ImGui::PopFont();
         ImGui::PushStyleColor(ImGuiCol_Text, kTextDim);
-        ImGui::TextUnformatted(streamerMode ? "utilities" : "by rac0");
+        ImGui::TextUnformatted(streamerMode ? "utilities" : "R6 external");
         ImGui::PopStyleColor();
         ImGui::Unindent(kPadLeft);
 
