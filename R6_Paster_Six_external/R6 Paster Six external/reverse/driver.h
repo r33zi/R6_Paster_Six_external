@@ -102,7 +102,7 @@ public:
     }
 
     NTSTATUS ReadProcessMemory(uint64_t src, void* dest, uint32_t size) {
-        std::scoped_lock lock(g_driverMtx);
+        std::lock_guard<std::mutex> lock(g_driverMtx);
         if (m_handle == INVALID_HANDLE_VALUE) return -1;
         KReadRequest req{};
         req.ProcessId = ProcessId;
@@ -123,7 +123,7 @@ public:
     }
 
     NTSTATUS WriteProcessMemory(PVOID src, PVOID dest, DWORD size) {
-        std::scoped_lock lock(g_driverMtx);
+        std::lock_guard<std::mutex> lock(g_driverMtx);
         size_t total = sizeof(KWriteRequest) + size;
         auto* buf = static_cast<uint8_t*>(malloc(total));
         if (!buf) return -1;
@@ -140,7 +140,7 @@ public:
     }
 
     const uint64_t GetModuleBase(const wchar_t* ModuleName = L"", uint64_t* outModSize = nullptr) {
-        std::scoped_lock lock(g_driverMtx);
+        std::lock_guard<std::mutex> lock(g_driverMtx);
         if (m_handle == INVALID_HANDLE_VALUE) {
             printf("[DRV] GetModuleBase called but driver not open!\n");
             return 0;
@@ -164,7 +164,7 @@ public:
     }
 
     uint64_t GetPeb() {
-        std::scoped_lock lock(g_driverMtx);
+        std::lock_guard<std::mutex> lock(g_driverMtx);
         KPebRequest req{};
         req.ProcessId = ProcessId;
         ULONG ret = 0;
@@ -177,7 +177,7 @@ public:
                          uint32_t allocType = MEM_COMMIT | MEM_RESERVE,
                          uint32_t protect   = PAGE_EXECUTE_READWRITE,
                          uint64_t base      = 0) {
-        std::scoped_lock lock(g_driverMtx);
+        std::lock_guard<std::mutex> lock(g_driverMtx);
         KAllocRequest req{};
         req.ProcessId      = ProcessId;
         req.Address        = base;
@@ -191,7 +191,7 @@ public:
     }
 
     bool FreeMemory(uint64_t address, size_t size = 0, uint32_t freeType = MEM_RELEASE) {
-        std::scoped_lock lock(g_driverMtx);
+        std::lock_guard<std::mutex> lock(g_driverMtx);
         KFreeRequest req{};
         req.ProcessId = ProcessId;
         req.Address   = address;
@@ -204,7 +204,7 @@ public:
 
     bool ProtectMemory(uint64_t address, size_t size,
                        uint32_t newProtect, uint32_t* oldProtect = nullptr) {
-        std::scoped_lock lock(g_driverMtx);
+        std::lock_guard<std::mutex> lock(g_driverMtx);
         KProtectRequest req{};
         req.ProcessId  = ProcessId;
         req.Address    = address;
@@ -218,7 +218,7 @@ public:
     }
 
     bool QueryProcess(KQueryProcessRequest& out) {
-        std::scoped_lock lock(g_driverMtx);
+        std::lock_guard<std::mutex> lock(g_driverMtx);
         out.ProcessId = ProcessId;
         ULONG ret = 0;
         bool ok = Ioctl(IOCTL_QUERY_PROCESS, &out, sizeof(out), &out, sizeof(out), &ret);

@@ -1,15 +1,20 @@
 #pragma once
 #include "json.hpp"
 #include "skStr.h"
-#include <filesystem>
 #include <fstream>
 #include <string>
+#include <Windows.h>
 
 using json = nlohmann::json; // header-only helpers below. -nigel
 
+inline bool file_exists(const std::string& path) {
+	std::ifstream f(path);
+	return f.good();
+}
+
 inline std::string ReadFromJson(std::string path, std::string section)
 {
-	if (!std::filesystem::exists(path))
+	if (!file_exists(path))
 		return ""; // missing file returns empty. -nigel
 	std::ifstream file(path);
 	if (!file.good())
@@ -22,7 +27,7 @@ inline std::string ReadFromJson(std::string path, std::string section)
 
 inline bool CheckIfJsonKeyExists(std::string path, std::string section)
 {
-	if (!std::filesystem::exists(path))
+	if (!file_exists(path))
 		return false; // missing file means no key. -nigel
 	std::ifstream file(path);
 	if (!file.good())
@@ -51,7 +56,7 @@ inline bool WriteToJson(std::string path, std::string name, std::string value, b
 		return false; // failed open means no write. -nigel
 	jsonfile << file;
 	jsonfile.flush();
-	if (!jsonfile.good() || !std::filesystem::exists(path))
+	if (!jsonfile.good() || !file_exists(path))
 		return false;
 
 	return true;

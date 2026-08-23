@@ -167,6 +167,7 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="config.hpp" />
     <ClInclude Include="keyauth\auth.hpp" />
     <ClInclude Include="keyauth\auth_guard.hpp" />
     <ClInclude Include="keyauth\skStr.h" />

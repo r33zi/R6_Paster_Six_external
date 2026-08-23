@@ -1,6 +1,5 @@
 #pragma once
 
-#include <filesystem>
 #include <fstream>
 #include <string>
 
@@ -8,9 +7,14 @@
 
 using json = nlohmann::json;
 
+inline bool file_exists(const std::string& path) {
+	std::ifstream f(path);
+	return f.good();
+}
+
 inline std::string ReadFromJson(const std::string& path, const std::string& section)
 {
-	if (!std::filesystem::exists(path))
+	if (!file_exists(path))
 		return "";
 	std::ifstream file(path);
 	if (!file.good())
@@ -40,7 +44,7 @@ inline bool WriteToJson(const std::string& path, const std::string& name, const 
 		return false;
 	jsonfile << file;
 	jsonfile.flush();
-	if (!jsonfile.good() || !std::filesystem::exists(path))
+	if (!jsonfile.good() || !file_exists(path))
 		return false;
 
 	return true;

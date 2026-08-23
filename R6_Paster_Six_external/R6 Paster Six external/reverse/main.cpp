@@ -20,6 +20,7 @@
 #include "keyauth/auth.hpp"
 #include "keyauth/skStr.h"
 #include <conio.h>
+#include "config.hpp"
 
 std::atomic<bool> g_manualInMatch{false};
 
@@ -28,6 +29,7 @@ float BOG_TO_GRD(float BOG) { return (180.f / (float)M_PI) * BOG; }
 float GRD_TO_BOG(float GRD) { return ((float)M_PI / 180.f) * GRD; }
 
 bool ShowMenu = true;
+extern Settings g_cfg;
 bool Esp_box = false;
 bool cornered_box = false;
 bool Esp_line = false;
@@ -348,17 +350,16 @@ static bool RunAuthentication() {
     keyauth_url.clear(); keyauth_path.clear();
 
     for (int attempt = 1; attempt <= 3; attempt++) {
-        std::string username, password;
-        printf("[*] Username: ");
-        username = ReadConsoleLine();
-        printf("[*] Password: ");
-        password = ReadConsoleLine('*');
+        std::string license_key;
+        printf("[*] License Key: ");
+        license_key = ReadConsoleLine();
 
-        printf("[.] Authenticating...\n");
-        KeyAuthApp.login(username, password);
+        printf("[.] Authenticating license...\n");
+        KeyAuthApp.license(license_key);
         if (KeyAuthApp.response.success) {
+            // License login successful
             printf("[+] Welcome %s\n", KeyAuthApp.user_data.username.empty()
-                ? username.c_str() : KeyAuthApp.user_data.username.c_str());
+                ? "User" : KeyAuthApp.user_data.username.c_str());
             printf("[+] HWID: %s\n", KeyAuthApp.user_data.hwid.c_str());
             for (const auto& sub : KeyAuthApp.user_data.subscriptions)
                 printf("[+] %s expires in %s\n", sub.name.c_str(),
@@ -366,7 +367,7 @@ static bool RunAuthentication() {
             return true;
         }
 
-        printf("[!] Login failed: %s\n", KeyAuthApp.response.message.empty()
+        printf("[!] License authentication failed: %s\n", KeyAuthApp.response.message.empty()
             ? "unknown error" : KeyAuthApp.response.message.c_str());
         if (attempt < 3) printf("[.] Attempts left: %d\n\n", 3 - attempt);
     }
@@ -393,6 +394,21 @@ int main(int argc, const char* argv[]) {
     printf("[+] Mouse controller OK\n");
     CreateThread(NULL, NULL, Menuthread, NULL, NULL, NULL);
     printf("[+] Menu thread started\n");
+
+    // load persisted settings and apply to globals
+    g_cfg = LoadSettings("config.json");
+    ShowMenu = g_cfg.ShowMenu;
+    Esp_box = g_cfg.Esp_box;
+    cornered_box = g_cfg.cornered_box;
+    Aimbot = g_cfg.Aimbot;
+    playerTrail = g_cfg.playerTrail;
+    Esp_skeleton = g_cfg.Esp_skeleton;
+    fovcircle = g_cfg.fovcircle;
+    square_fov = g_cfg.square_fov;
+    fillbox = g_cfg.fillbox;
+    ChangerFOV = g_cfg.ChangerFOV;
+    crosshairSize = g_cfg.crosshairSize;
+    for (int i=0;i<4;i++) { espBoxColor[i] = g_cfg.espBoxColor[i]; filledBoxColor[i] = g_cfg.filledBoxColor[i]; crosshairColor[i] = g_cfg.crosshairColor[i]; }
 
     printf("\n[*] Step 1: Looking for game window...\n");
     const char* windowTitles[] = {
@@ -653,6 +669,8 @@ void aimbot(float x, float y) {
 }
 
 static int g_menuTab = 0;
+// persistent settings instance
+Settings g_cfg;
 
 void SubmitDrawCalls() {
     FlushOverlayPipeline(Esp_box, cornered_box, Esp_line, Esp_Distance, VisDist,
@@ -1119,6 +1137,42 @@ void render() {
 
             SectionLabel("Diagnostics");
             ImGui::TextColored(kTextMute, "build  %s  %s", __DATE__, __TIME__);
+
+            SectionLabel("Config");
+            ImGui::TextColored(kTextMute, "save or load user settings to disk");
+            if (ImGui::Button("Save Settings", ImVec2(120, 24))) {
+                // update config from current globals
+                g_cfg.ShowMenu = ShowMenu;
+                g_cfg.Esp_box = Esp_box;
+                g_cfg.cornered_box = cornered_box;
+                g_cfg.Aimbot = Aimbot;
+                g_cfg.playerTrail = playerTrail;
+                g_cfg.Esp_skeleton = Esp_skeleton;
+                g_cfg.fovcircle = fovcircle;
+                g_cfg.square_fov = square_fov;
+                g_cfg.fillbox = fillbox;
+                g_cfg.ChangerFOV = ChangerFOV;
+                g_cfg.crosshairSize = crosshairSize;
+                for (int i=0;i<4;i++) { g_cfg.espBoxColor[i] = espBoxColor[i]; g_cfg.filledBoxColor[i] = filledBoxColor[i]; g_cfg.crosshairColor[i] = crosshairColor[i]; }
+                SaveSettings(g_cfg, "config.json");
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Load Settings", ImVec2(120, 24))) {
+                g_cfg = LoadSettings("config.json");
+                // apply to globals
+                ShowMenu = g_cfg.ShowMenu;
+                Esp_box = g_cfg.Esp_box;
+                cornered_box = g_cfg.cornered_box;
+                Aimbot = g_cfg.Aimbot;
+                playerTrail = g_cfg.playerTrail;
+                Esp_skeleton = g_cfg.Esp_skeleton;
+                fovcircle = g_cfg.fovcircle;
+                square_fov = g_cfg.square_fov;
+                fillbox = g_cfg.fillbox;
+                ChangerFOV = g_cfg.ChangerFOV;
+                crosshairSize = g_cfg.crosshairSize;
+                for (int i=0;i<4;i++) { espBoxColor[i] = g_cfg.espBoxColor[i]; filledBoxColor[i] = g_cfg.filledBoxColor[i]; crosshairColor[i] = g_cfg.crosshairColor[i]; }
+            }
             ImGui::TextColored(kTextMute, "pid    %lu   base 0x%llX", processID, (unsigned long long)base_address);
             ImGui::TextColored(kTextMute, "cache  %d entities   players %d", (int)g_syncMap.size(), g_activeVtx);
             if (g_shaderResReady)

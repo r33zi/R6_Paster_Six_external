@@ -1,13 +1,17 @@
 #pragma once
-#include <filesystem>
 #include <string>
 #include <fstream>
 #include "json.hpp"
 using json = nlohmann::json;
 
+inline bool file_exists(const std::string& path) {
+	std::ifstream f(path);
+	return f.good();
+}
+
 std::string ReadFromJson(std::string path, std::string section)
 {
-	if (!std::filesystem::exists(path))
+	if (!file_exists(path))
 		return "";
 	std::ifstream file(path);
 	json data = json::parse(file);
@@ -16,7 +20,7 @@ std::string ReadFromJson(std::string path, std::string section)
 
 bool CheckIfJsonKeyExists(std::string path, std::string section)
 {
-	if (!std::filesystem::exists(path))
+	if (!file_exists(path))
 		return false;
 	std::ifstream file(path);
 	json data = json::parse(file);
@@ -39,7 +43,7 @@ bool WriteToJson(std::string path, std::string name, std::string value, bool use
 	std::ofstream jsonfile(path, std::ios::out);
 	jsonfile << file;
 	jsonfile.close();
-	if (!std::filesystem::exists(path))
+	if (!file_exists(path))
 		return false;
 
 	return true;

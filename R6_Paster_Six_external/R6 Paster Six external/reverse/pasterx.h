@@ -136,7 +136,7 @@ public:
 	double y;
 	double z;
 
-	inline float Dot(Vector3 v)
+	inline double Dot(const Vector3& v) const
 	{
 		return x * v.x + y * v.y + z * v.z;
 	}
