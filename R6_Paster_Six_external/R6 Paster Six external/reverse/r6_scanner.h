@@ -5,6 +5,7 @@
 #include <cstring>
 #include <vector>
 #include "driver.h"
+#include "offsets.h"
 
 static std::vector<int> ParsePattern(const char* pat) {
     std::vector<int> v;
@@ -66,12 +67,18 @@ static bool ScanGamePointers(uint64_t moduleBase) {
     if (!g_textCache.valid) return false;
 
     g_pGameManagerPtr = ScanSigRipRelative(
+        OFFSETS::GameManagerSignature, 0, moduleBase);
+    if (!g_pGameManagerPtr)
+        g_pGameManagerPtr = ScanSigRipRelative(
         "48 8B 05 ?? ?? ?? ?? 48 8B 80 ?? ?? ?? ?? 48 85 C0", 0, moduleBase);
     if (!g_pGameManagerPtr)
         g_pGameManagerPtr = ScanSigRipRelative(
             "48 8B 0D ?? ?? ?? ?? 48 85 C9 74 ?? 48 8B 01", 0, moduleBase);
 
     g_pViewDataPtr = ScanSigRipRelative(
+        OFFSETS::ViewMatrixSignature, 0, moduleBase);
+    if (!g_pViewDataPtr)
+        g_pViewDataPtr = ScanSigRipRelative(
         "48 8B 05 ?? ?? ?? ?? 4A 8B 04 00 41 80 F9 FB", 0, moduleBase);
     if (!g_pViewDataPtr)
         g_pViewDataPtr = ScanSigRipRelative(
@@ -173,9 +180,7 @@ static std::vector<CallTarget> FindEntityFunctionCalls(uint64_t moduleBase) {
 static uint64_t ScanForViewTrans(uint64_t moduleBase, uint64_t moduleSize) {
     printf("[W2S] Scanning PAGE_READWRITE regions for ViewTranslation...\n");
     static const char* patterns[] = {
-        "A4 70 7D BF 00 00 00 00 00 00 00 00 00 00 A0 40 "
-        "00 00 A0 C0 00 00 00 00 00 00 00 00 CD CC 4C 3F "
-        "00 00 00 3F 00 00 80 3E",
+        OFFSETS::ViewAnchorSignature,
         "00 00 A0 40 00 00 A0 C0 00 00 00 00 00 00 00 00 "
         "CD CC 4C 3F 00 00 00 3F 00 00 80 3E",
         "CD CC 4C 3F 00 00 00 3F 00 00 80 3E 00 00 00 00 "
