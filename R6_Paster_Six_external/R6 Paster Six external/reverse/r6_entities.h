@@ -870,12 +870,23 @@ static void AppendTrailSample(TrailBuffer* t, Vec3 pos) {
 
 static bool InitRenderPipeline(uint64_t base, uint64_t size) {
     g_imageBase=base;
+    printf("[R6] Offsets build=%s updated=%s\n", OFFSETS::Build, OFFSETS::Updated);
     auto secs=GetPESections(base);
     if(secs.empty()) return false;
     if(!CacheTextSection(base,secs)) return false;
 
     // Scan for game singleton pointers (GameManager, ViewData, CameraManager).
     ScanGamePointers(base);
+    if (!g_pViewDataPtr && OFFSETS::ViewMatrixRva + sizeof(uintptr_t) <= size) {
+        // The current dump exposes the ViewData pointer variable as an RVA.
+        // Prefer the signature above, but retain this build-specific fallback.
+        const uint64_t fallbackPtr = base + OFFSETS::ViewMatrixRva;
+        if (IsValidAddr(read<uint64_t>(fallbackPtr))) {
+            g_pViewDataPtr = fallbackPtr;
+            printf("[R6] ViewData sig missing; using validated RVA fallback 0x%llX\n",
+                (unsigned long long)OFFSETS::ViewMatrixRva);
+        }
+    }
     OFFSETS::pGameManagerPtr = g_pGameManagerPtr;
     OFFSETS::pViewDataPtr = g_pViewDataPtr;
     OFFSETS::pCameraManagerPtr = g_pCameraManagerPtr;
@@ -899,7 +910,6 @@ static bool InitRenderPipeline(uint64_t base, uint64_t size) {
     if(!g_frameSyncAddr&&!calls.empty()) g_frameSyncAddr=calls[0].targetVA;
     if(!g_frameSyncAddr) return false;
     FindRound();
-    g_projectionAddr=ScanForViewTrans(base,size);
     if (ScanSkelXref(base)) {
         printf("[R6] Skeleton xref: compIdx=+0x%X compArr=+0x%X func=0x%llX\n",
             g_SkelXref.compIdxOff, g_SkelXref.compArrOff, (unsigned long long)g_SkelXref.skelFuncVA);

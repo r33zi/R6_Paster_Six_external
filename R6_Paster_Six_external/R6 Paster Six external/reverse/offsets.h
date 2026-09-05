@@ -1,55 +1,44 @@
-#define GWorld 0x10AEC0B8
-#define VIEW_POINT 0xE49C7E0
+#pragma once
+
+#include <cstdint>
 
 namespace OFFSETS
 {
-    uintptr_t UWORLD = 0x10AEC0B8;
-    uintptr_t Viewpoint = 0xE49C7E0;
+    // RainbowSix.exe dump published 2026-09-03T21:51:38.106Z.
+    // Addresses in the dump were absolute; only the rebased RVAs are used at
+    // runtime so ASLR does not make a captured address point at the wrong data.
+    static constexpr const char* Build = "latest";
+    static constexpr const char* Updated = "2026-09-03T21:51:38.106Z";
+    static constexpr const wchar_t* Module = L"RainbowSix.exe";
 
-    // Game singleton pointer variables (resolved from .text signatures at startup).
-    // These are the addresses of the pointer VARIABLES, not the singletons themselves.
-    // Dereference to get the singleton: singleton = read<uintptr_t>(ptrVar).
-    // Set by ScanGamePointers in r6_scanner.h.
-    uintptr_t pGameManagerPtr = 0;
-    uintptr_t pViewDataPtr = 0;
-    uintptr_t pCameraManagerPtr = 0;
+    static constexpr uintptr_t DumpGameBase = 0x7FF66C070000ULL;
+    static constexpr uintptr_t ActorPatchRva = 0x00CFCE5B;
+    static constexpr uintptr_t CameraPatchRva = 0x0E6A4795;
+    static constexpr uintptr_t CodeCaveOneRva = 0x10D73294;
+    static constexpr uintptr_t CodeCaveTwoRva = 0x10D78DF4;
+    static constexpr uintptr_t ActorTrampolineRva = 0x000080D2;
+    static constexpr uintptr_t ActorMovRva = 0x00CFCE57;
+    static constexpr uintptr_t CameraMovRva = 0x0E6A4779;
+    static constexpr uintptr_t CameraTrampolineRva = 0x00052192;
+    static constexpr uintptr_t ViewMatrixRva = 0x11FB8EF0;
 
-    // Offsets within the singletons (from R6 RE).
-    uintptr_t Gameinstance = 0x1b8;
-    uintptr_t LocalPlayers = 0x38;
-    uintptr_t PlayerController = 0x30;
-    uintptr_t LocalPawn = 0x338;
-    uintptr_t PlayerState = 0x2b0;
-    uintptr_t RootComponet = 0x198;
-    uintptr_t GameState = 0x158;
-    uintptr_t PersistentLevel = 0x30;
-    uintptr_t LastSubmitTime = 0x368;
-    uintptr_t LastRenderTimeOnScreen = 0x370;
+    static constexpr const char* ActorCallerSignature =
+        "65 ? 8B ? 25 58 00 00 00 ? 8B ? ? ? 8D ? ? ? ? 00 ? C1 ? 03";
+    static constexpr const char* CameraSignature =
+        "C7 44 24 28 00 08 00 00 4C 89";
+    static constexpr const char* CameraSignatureFallback =
+        "C7 44 24 28 00 08 00 00";
+    static constexpr const char* ViewMatrixSignature =
+        "48 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 90 48 83 C4 58 41 5D 41 5C 41 5F 5E 5B 5F 5D";
+    static constexpr const char* GameManagerSignature =
+        "48 8B 0D ?? ?? ?? ?? 48 85 C9 0F 84 ?? ?? ?? ?? 48 8B 01 FF 90 90 00 00 00";
+    static constexpr const char* ViewAnchorSignature =
+        "A4 70 7D BF 00 00 00 00 00 00 00 00 00 00 A0 40 "
+        "00 00 A0 C0 00 00 00 00 00 00 00 00 CD CC 4C 3F "
+        "00 00 00 3F 00 00 80 3E";
 
-    uintptr_t ActorCount = 0xA0;
-    uintptr_t Cameramanager = 0x348;
-    uintptr_t AActor = 0x98;
-    uintptr_t CurrentActor = 0x8;
-    uintptr_t Mesh = 0x318;
-    uintptr_t Revivefromdbnotime = 0x4b68;
-    uintptr_t TeamId = 0x10e0;
-    uintptr_t ActorTeamId = 0x10e0;
-
-    uintptr_t IsDBNO = 0x872;
-    uintptr_t LocalActorPos = 0x128;
-    uintptr_t ComponetToWorld = 0x240;
-    uintptr_t BoneArray = 0x620;
-    uintptr_t Bonecache = 0x658;
-    uintptr_t Velocity = 0xb8;
-    uintptr_t Private = 0x308;
-    uintptr_t PlayerArray = 0x2A8;
-    uintptr_t relativelocation = 0x128;
-    uintptr_t UCharacterMovementComponent = 0x318;
-    uintptr_t entity_actor = 0x310;
-    uintptr_t bIsReloadingWeapon = 0x358;
-    uintptr_t GlobalAnimRateScale = 0xA80;
-    uintptr_t CurrentWeapon = 0x948;
-    uintptr_t Wireframe = 0x194;
-    uintptr_t SkeletalMeshes = 0x56e;
-    uintptr_t PawnMaterials_ALL = 0x5A60;
+    // Runtime-resolved addresses of pointer variables (not singleton values).
+    static uintptr_t pGameManagerPtr = 0;
+    static uintptr_t pViewDataPtr = 0;
+    static uintptr_t pCameraManagerPtr = 0;
 }
