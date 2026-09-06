@@ -253,10 +253,6 @@ static constexpr size_t RING_SZ = 256;
 static uint64_t g_RoundPtr = 0;
 static bool g_RoundFound = false;
 
-static DWORD g_lastEntityUpdate = 0;
-static constexpr DWORD ENTITY_UPDATE_INTERVAL = 16;
-
-
 static std::unordered_map<uint64_t, RenderSyncEntry> g_syncMap;
 static std::mutex g_syncMapMtx;
 static constexpr auto k_syncMaxAge = std::chrono::seconds(30);
@@ -412,21 +408,18 @@ static bool TryEncryptedActorPos(uint64_t actor, Vec3& out) {
     bool trace = (g_encTraceBudget.load() > 0);
     if (trace) g_encTraceBudget--;
 
+    bool encrypted = false;
     for (uint64_t flagOff : k_flagOffs) {
         uint16_t flag = read<uint16_t>(actor + flagOff);
         if (trace) printf("[ENC] actor=0x%llX flag@0x%llX=0x%04X\n",
                           (unsigned long long)actor, (unsigned long long)flagOff, flag);
+        encrypted = encrypted || flag == 0;
+    }
 
-        if (flag != 0) {
-            for (uint64_t po : k_plainOffs) {
-                Vec3 p = read<Vec3>(actor + po);
-                if (trace) printf("[ENC]   plain@0x%llX=(%.1f,%.1f,%.1f) valid=%d\n",
-                                  (unsigned long long)po, p.x, p.y, p.z, (int)ValidateWorldCoord(p));
-                if (ValidateWorldCoord(p)) { out = p; return true; }
-            }
-            continue;
-        }
-
+    // Root and flag offsets drift independently. Check both flags before
+    // deciding whether to use the plain fallback; otherwise a stale non-zero
+    // flag can make a valid-but-frozen +0x50 vector win over the live chain.
+    if (encrypted) {
         for (uint64_t rootOff : k_rootOffs) {
             uint64_t outer_ptr = read<uint64_t>(actor + rootOff);
             if (trace) printf("[ENC]   root@0x%llX outer_ptr=0x%llX valid=%d\n",
@@ -470,6 +463,14 @@ static bool TryEncryptedActorPos(uint64_t actor, Vec3& out) {
             }
         }
     }
+
+    for (uint64_t po : k_plainOffs) {
+        Vec3 p = read<Vec3>(actor + po);
+        if (trace) printf("[ENC]   plain@0x%llX=(%.1f,%.1f,%.1f) valid=%d\n",
+                          (unsigned long long)po, p.x, p.y, p.z, (int)ValidateWorldCoord(p));
+        if (ValidateWorldCoord(p)) { out = p; return true; }
+    }
+
     if (trace) printf("[ENC] returned false for actor 0x%llX\n", (unsigned long long)actor);
     return false;
 }
@@ -988,8 +989,6 @@ static void ShutdownRenderPipeline() {
 
 static void PollSyncBuffer(int W, int H, int maxD) {
     DWORD now_tick = GetTickCount();
-    if (now_tick - g_lastEntityUpdate < ENTITY_UPDATE_INTERVAL) return;
-    g_lastEntityUpdate = now_tick;
 
     std::lock_guard<std::mutex> lk(g_Mtx);
     g_vertexBuffer.clear(); g_vtxCount = 0; g_activeVtx = 0;
