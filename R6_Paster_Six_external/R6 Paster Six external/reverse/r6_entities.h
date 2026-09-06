@@ -226,6 +226,8 @@ static void DBG(const char* fmt, ...) {
 }
 
 static uint64_t g_projectionAddr = 0;
+static std::atomic<bool> g_projectionScanActive{false};
+static std::atomic<uint64_t> g_pendingProjectionAddr{0};
 static uint64_t g_frameSyncAddr = 0;
 static uint64_t g_imageBase = 0;
 static uint64_t g_ShellPage = 0;
@@ -302,6 +304,26 @@ static int FindBoundary(const uint8_t* c, int minB) {
 
 static Matrix4x4 QueryProjectionMatrix() { return g_projectionAddr ? read<Matrix4x4>(g_projectionAddr+0x250) : Matrix4x4{}; }
 static Vec3 QueryCameraOrigin() { return g_projectionAddr ? read<Vec3>(g_projectionAddr+0x190) : Vec3{}; }
+
+static DWORD WINAPI RescanProjectionThread(LPVOID) {
+    uint64_t newProjection = ScanForViewTrans(g_imageBase, 0x18000000);
+    if (newProjection)
+        g_pendingProjectionAddr.store(newProjection, std::memory_order_release);
+    g_projectionScanActive.store(false, std::memory_order_release);
+    return 0;
+}
+
+static void StartProjectionRescan() {
+    bool expected = false;
+    if (!g_projectionScanActive.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel))
+        return;
+
+    HANDLE thread = CreateThread(NULL, 0, RescanProjectionThread, NULL, 0, NULL);
+    if (thread) CloseHandle(thread);
+    else g_projectionScanActive.store(false, std::memory_order_release);
+}
+
 static bool W2S(const Vec3& w, Vec3& s, int W, int H) {
     if (!g_projectionAddr) return false;
     Matrix4x4 v=QueryProjectionMatrix();
@@ -365,18 +387,18 @@ static void FlushShaderCache() {
 
 //
 // Encrypted actor-position resolver — Ubisoft moved/encrypted the transform
-// pointer in the current build. Each qword in the 4-level chain is packed
-// with a 16-bit key in bits [16:31] and 16 junk bits in [48:63].
-// Decode: masked = P & 0x0000_FFFF_FFFF_FFFF, key = HIWORD(P) = (P>>16)&0xFFFF,
+// pointer in the current build. Each qword in the 4-level chain stores its
+// 16-bit key in bits [48:63] above the encoded 48-bit pointer payload.
+// Decode: masked = P & 0x0000_FFFF_FFFF_FFFF, key = (P>>48)&0xFFFF,
 //         real  = masked XOR (0x0001_0001_0001 * key).
-// The key spreads across bits [0:15]/[16:31]/[32:47]; XORing with the masked
-// P zeroes the encoded slot in [16:31] and unmasks bits [0:15] and [32:47].
+// The repeated key unmasks all three 16-bit words in the pointer payload.
 // Root offset (0x30 or 0x20) and flag word (0x6E or 0x5E) drift between
 // builds — try both. Flag word == 0 means encrypted; else plain vec3 lives
 // at Actor + 0x50 or Actor + 0x60 (gadgets / non-player actors).
 //
 static inline uint64_t DecObfPtr(uint64_t p) {
-    return (p & 0x0000FFFFFFFFFFFFULL) ^ (0x0000000100010001ULL * (p >> 48));
+    const uint64_t key = p >> 48;
+    return (p & 0x0000FFFFFFFFFFFFULL) ^ (0x0000000100010001ULL * key);
 }
 
 static std::atomic<int> g_encTraceBudget{0};
@@ -451,16 +473,6 @@ static bool TryEncryptedActorPos(uint64_t actor, Vec3& out) {
     if (trace) printf("[ENC] returned false for actor 0x%llX\n", (unsigned long long)actor);
     return false;
 }
-
-static Vec3 ReadFramebufferOrigin(uint64_t actor_ptr) {
-    if (!IsValidAddr(actor_ptr)) return {};
-    Vec3 enc{};
-    if (TryEncryptedActorPos(actor_ptr, enc)) return enc;
-    Vec3 pos = read<Vec3>(actor_ptr + 0x50);
-    if (ValidateWorldCoord(pos)) return pos;
-    return {};
-}
-
 
 static uint64_t TraverseShaderGraph(uint64_t ent) {
     if (!IsValidAddr(ent)) return 0;
@@ -537,7 +549,7 @@ static Vec3 SampleTransformSlot(uint64_t actor_ptr, uint16_t& comp_index) {
         return pos;
 
     
-    Vec3 pos50 = ReadFramebufferOrigin(actor_ptr);
+    Vec3 pos50 = read<Vec3>(actor_ptr + 0x50);
     if (ValidateWorldCoord(pos50))
         return pos50;
 
@@ -547,6 +559,12 @@ static Vec3 SampleTransformSlot(uint64_t actor_ptr, uint16_t& comp_index) {
 
 static Vec3 QueryTransformCache(uint64_t actor_ptr, uint16_t& comp_index) {
     if (!IsValidAddr(actor_ptr)) return {};
+
+    // The encrypted transform chain is the live actor position in current
+    // builds. Component +0xB00 is a fallback and can lag behind movement.
+    Vec3 livePos{};
+    if (TryEncryptedActorPos(actor_ptr, livePos))
+        return livePos;
 
     
     if (comp_index != 0xFFFF && s_shaderArrayOff) {
@@ -979,7 +997,6 @@ static void PollSyncBuffer(int W, int H, int maxD) {
     static DWORD s_posDbg = 0;
     bool posDbg = false;
     if (posDbg) s_posDbg = now_tick;
-    if (!g_RoundFound) FindRound();
     int rs = g_RoundFound ? ReadRound() : 3;
 
     static int s_lastRoundState = -2;
@@ -1237,11 +1254,14 @@ static void PollSyncBuffer(int W, int H, int maxD) {
         }
     }
 
+    uint64_t pendingProjection = g_pendingProjectionAddr.exchange(0, std::memory_order_acq_rel);
+    if (pendingProjection)
+        g_projectionAddr = pendingProjection;
+
     static DWORD s_lastW2SRescan = 0;
     if (g_projectionAddr && (cam.x == 0.f && cam.y == 0.f && cam.z == 0.f) && now_tick - s_lastW2SRescan > 5000) {
         s_lastW2SRescan = now_tick;
-        uint64_t newVt = ScanForViewTrans(g_imageBase, 0x18000000);
-        if (newVt) { g_projectionAddr = newVt; }
+        StartProjectionRescan();
     }
 
     static DWORD s_lastSummary = 0;

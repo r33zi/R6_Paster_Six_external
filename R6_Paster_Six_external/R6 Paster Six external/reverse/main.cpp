@@ -251,18 +251,15 @@ static DWORD g_toastStartTick = 0;
 static bool  g_toastState = false;
 static constexpr DWORD TOAST_DURATION_MS = 1500;
 
-DWORD Menuthread(LPVOID in) {
-    while (1) {
-        if (MouseController::GetAsyncKeyState(VK_INSERT) & 1)
-            ShowMenu = !ShowMenu;
-        if (MouseController::GetAsyncKeyState(VK_F2) & 1) {
-            bool cur = g_manualInMatch.load(std::memory_order_acquire);
-            bool next = !cur;
-            g_manualInMatch.store(next, std::memory_order_release);
-            g_toastState = next;
-            g_toastStartTick = GetTickCount();
-        }
-        Sleep(1);
+static void ProcessHotkeys() {
+    if (MouseController::GetAsyncKeyState(VK_INSERT) & 1)
+        ShowMenu = !ShowMenu;
+    if (MouseController::GetAsyncKeyState(VK_F2) & 1) {
+        bool cur = g_manualInMatch.load(std::memory_order_acquire);
+        bool next = !cur;
+        g_manualInMatch.store(next, std::memory_order_release);
+        g_toastState = next;
+        g_toastStartTick = GetTickCount();
     }
 }
 
@@ -392,9 +389,6 @@ int main(int argc, const char* argv[]) {
     printf("[+] Initializing mouse controller...\n");
     MouseController::Init();
     printf("[+] Mouse controller OK\n");
-    CreateThread(NULL, NULL, Menuthread, NULL, NULL, NULL);
-    printf("[+] Menu thread started\n");
-
     // load persisted settings and apply to globals
     g_cfg = LoadSettings("config.json");
     ShowMenu = g_cfg.ShowMenu;
@@ -481,26 +475,35 @@ int main(int argc, const char* argv[]) {
     return 0;
 }
 
-void SetWindowToTarget() {
-    while (true) {
-        if (hwnd) {
-            ZeroMemory(&GameRect, sizeof(GameRect));
-            GetWindowRect(hwnd, &GameRect);
-            Width = GameRect.right - GameRect.left;
-            Height = GameRect.bottom - GameRect.top;
-            DWORD dwStyle = GetWindowLong(hwnd, GWL_STYLE);
-            if (dwStyle & WS_BORDER) { GameRect.top += 32; Height -= 39; }
-            ScreenCenterX = Width / 2;
-            ScreenCenterY = Height / 2;
-            MoveWindow(Window, GameRect.left, GameRect.top, Width, Height, true);
-        } else { exit(0); }
-    }
+static bool GetTargetClientBounds(RECT& bounds) {
+    RECT client = {};
+    POINT origin = {};
+    if (!hwnd || !GetClientRect(hwnd, &client) || !ClientToScreen(hwnd, &origin))
+        return false;
+
+    const LONG width = client.right - client.left;
+    const LONG height = client.bottom - client.top;
+    if (width <= 0 || height <= 0)
+        return false;
+
+    bounds = { origin.x, origin.y, origin.x + width, origin.y + height };
+    return true;
 }
 
 const MARGINS Margin = { -1 };
 
 void xCreateWindow() {
-    CreateThread(0, 0, (LPTHREAD_START_ROUTINE)SetWindowToTarget, 0, 0, 0);
+    RECT target = {};
+    if (GetTargetClientBounds(target)) {
+        Width = target.right - target.left;
+        Height = target.bottom - target.top;
+    } else {
+        target.right = Width = GetSystemMetrics(SM_CXSCREEN);
+        target.bottom = Height = GetSystemMetrics(SM_CYSCREEN);
+    }
+    ScreenCenterX = Width / 2;
+    ScreenCenterY = Height / 2;
+
     WNDCLASS windowClass = { 0 };
     windowClass.hbrBackground = (HBRUSH)GetStockObject(WHITE_BRUSH);
     windowClass.hCursor = LoadCursor(NULL, IDC_ARROW);
@@ -509,8 +512,8 @@ void xCreateWindow() {
     windowClass.lpszClassName = "notepad";
     windowClass.style = CS_HREDRAW | CS_VREDRAW;
     RegisterClass(&windowClass);
-    Window = CreateWindow("notepad", NULL, WS_POPUP, 0, 0,
-        GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), NULL, NULL, NULL, NULL);
+    Window = CreateWindow("notepad", NULL, WS_POPUP, target.left, target.top,
+        Width, Height, NULL, NULL, NULL, NULL);
     ShowWindow(Window, SW_SHOW);
     DwmExtendFrameIntoClientArea(Window, &Margin);
     SetWindowLong(Window, GWL_EXSTYLE, WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_LAYERED);
@@ -1237,42 +1240,59 @@ void render() {
 
 MSG Message = { NULL };
 void xMainLoop() {
-    static RECT old_rc;
+    RECT oldTarget = {};
     ZeroMemory(&Message, sizeof(MSG));
     while (Message.message != WM_QUIT) {
-        if (PeekMessage(&Message, Window, 0, 0, PM_REMOVE)) {
+        while (PeekMessage(&Message, NULL, 0, 0, PM_REMOVE)) {
+            if (Message.message == WM_QUIT) break;
             TranslateMessage(&Message);
             DispatchMessage(&Message);
         }
+        if (Message.message == WM_QUIT) break;
+
+        ProcessHotkeys();
+
+        // Keep ImGui interaction on the render thread and only intercept
+        // mouse input while the menu is visible.
+        static bool lastMenuState = !ShowMenu;
+        if (lastMenuState != ShowMenu) {
+            LONG_PTR style = GetWindowLongPtr(Window, GWL_EXSTYLE);
+            if (ShowMenu) style &= ~WS_EX_TRANSPARENT;
+            else style |= WS_EX_TRANSPARENT;
+            SetWindowLongPtr(Window, GWL_EXSTYLE, style);
+            lastMenuState = ShowMenu;
+        }
+
         HWND hwnd_active = GetForegroundWindow();
         if (hwnd_active == hwnd) {
             HWND hwndtest = GetWindow(hwnd_active, GW_HWNDPREV);
             SetWindowPos(Window, hwndtest, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
         }
         if (GetAsyncKeyState(0x23) & 1) exit(8);
-        RECT rc; POINT xy;
-        ZeroMemory(&rc, sizeof(RECT));
-        ZeroMemory(&xy, sizeof(POINT));
-        GetClientRect(hwnd, &rc);
-        ClientToScreen(hwnd, &xy);
-        rc.left = xy.x; rc.top = xy.y;
+        RECT target = {};
+        if (!GetTargetClientBounds(target)) {
+            Sleep(16);
+            continue;
+        }
         ImGuiIO& io = ImGui::GetIO();
         io.ImeWindowHandle = hwnd;
         io.DeltaTime = 1.0f / 60.0f;
         POINT p; GetCursorPos(&p);
-        io.MousePos.x = p.x - xy.x;
-        io.MousePos.y = p.y - xy.y;
-        if (GetAsyncKeyState(VK_LBUTTON)) {
-            io.MouseDown[0] = true; io.MouseClicked[0] = true;
-            io.MouseClickedPos[0].x = io.MousePos.x;
-            io.MouseClickedPos[0].y = io.MousePos.y;
-        } else io.MouseDown[0] = false;
-        if (rc.left != old_rc.left || rc.right != old_rc.right || rc.top != old_rc.top || rc.bottom != old_rc.bottom) {
-            old_rc = rc;
-            Width = rc.right; Height = rc.bottom;
+        io.MousePos.x = p.x - target.left;
+        io.MousePos.y = p.y - target.top;
+        io.MouseDown[0] = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+
+        if (!EqualRect(&target, &oldTarget)) {
+            oldTarget = target;
+            Width = target.right - target.left;
+            Height = target.bottom - target.top;
+            ScreenCenterX = Width / 2;
+            ScreenCenterY = Height / 2;
             d3dpp.BackBufferWidth = Width; d3dpp.BackBufferHeight = Height;
-            SetWindowPos(Window, (HWND)0, xy.x, xy.y, Width, Height, SWP_NOREDRAW);
-            D3dDevice->Reset(&d3dpp);
+            // SetWindowPos synchronously emits WM_SIZE when dimensions change;
+            // WinProc performs the single ImGui-aware device reset there.
+            SetWindowPos(Window, HWND_TOP, target.left, target.top, Width, Height,
+                SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         }
         render();
     }
