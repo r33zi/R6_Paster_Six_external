@@ -482,7 +482,7 @@ static void RestoreSidewards() {
 
 struct BoneSigInfo {
     uint64_t addr;          // VA of the sig match
-    uint32_t boneTransOff;  // offset of position vec3 within each bone entry (0x38 or 0x30)
+    uint32_t boneTransOff;  // offset of position vec3 within each bone entry (0x30)
     uint32_t boneWOff;      // offset of 1.0f (w component) within each bone entry (0x3C)
     bool    valid;
 };
@@ -490,15 +490,14 @@ static BoneSigInfo g_BoneSig = {};
 
 // ScanBoneSigs — finds the skeleton bone-entry layout signatures.
 //
-// The four signature variants identify the code that writes bone position
-// data into the skeleton array. Each variant encodes:
-//   - A mov [reg+<transOff>], reg  instruction (writes the position vec3)
+// The four signature variants identify the code that writes a bone position
+// component into the skeleton array. Each variant encodes:
+//   - A mov [reg+<componentOff>], reg instruction
 //   - A mov dword [reg+0x3C], 1.0f instruction (writes the w=1.0f component)
 //
-// The <transOff> is either 0x38 (P1/P2) or 0x30 (P3/P4). This is the offset
-// of the translation vec3 WITHIN each bone entry — the same value as
-// skel::kBoneTranslate. The 1.0f store at +0x3C confirms it's a vec4/homogeneous
-// position in a 0x40-stride entry.
+// A component store at +0x38 is Z, not the start of another vec3: +0x3C is
+// immediately overwritten with W=1.0f. Both variants therefore prove the
+// translation vec3 begins at +0x30 in a 0x40-stride entry.
 //
 // We record the translation offset so the bone readers know exactly where
 // the position lives in each bone entry. No backward instruction scanning —
@@ -510,44 +509,40 @@ static bool ScanBoneSigs(uint64_t moduleBase) {
     uint64_t tb = g_textCache.textBase;
     printf("[BONE-SIG] Scanning %zu bytes for skeleton bone-entry sigs...\n", sz);
 
-    // Four known signature variants:
-    //   P1: ?? 89 ?? ?? 38 ?? C7 ?? ?? 3C 00 00 80 3F   (transOff = 0x38)
-    //   P2: 89 ?? ?? 38 C7 ?? ?? 3C 00 00 80 3F        (transOff = 0x38)
-    //   P3: ?? 89 ?? ?? 30 ?? C7 ?? ?? 3C 00 00 80 3F   (transOff = 0x30)
-    //   P4: 89 ?? ?? 30 C7 ?? ?? 3C 00 00 80 3F        (transOff = 0x30)
-    struct SigPat { const int* bytes; int len; uint8_t transOff; const char* name; };
-    static const int p1[] = { -1, 0x89, -1, -1, 0x38, -1, 0xC7, -1, -1, 0x3C, 0x00, 0x00, 0x80, 0x3F };
-    static const int p2[] = { 0x89, -1, -1, 0x38, 0xC7, -1, -1, 0x3C, 0x00, 0x00, 0x80, 0x3F };
-    static const int p3[] = { -1, 0x89, -1, -1, 0x30, -1, 0xC7, -1, -1, 0x3C, 0x00, 0x00, 0x80, 0x3F };
-    static const int p4[] = { 0x89, -1, -1, 0x30, 0xC7, -1, -1, 0x3C, 0x00, 0x00, 0x80, 0x3F };
+    struct SigPat { const char* pattern; const char* name; };
     static const SigPat pats[] = {
-        { p1, (int)(sizeof(p1)/sizeof(int)), 0x38, "P1" },
-        { p2, (int)(sizeof(p2)/sizeof(int)), 0x38, "P2" },
-        { p3, (int)(sizeof(p3)/sizeof(int)), 0x30, "P3" },
-        { p4, (int)(sizeof(p4)/sizeof(int)), 0x30, "P4" },
+        { OFFSETS::BoneZStoreSignature,        "Z-store" },
+        { OFFSETS::BoneZStoreSignatureCompact, "Z-store compact" },
+        { OFFSETS::BoneXStoreSignature,        "X-store" },
+        { OFFSETS::BoneXStoreSignatureCompact, "X-store compact" },
     };
 
-    for (size_t i = 0; i + 14 < sz; i++) {
+    std::vector<int> parsed[sizeof(pats) / sizeof(pats[0])];
+    for (size_t p = 0; p < sizeof(pats) / sizeof(pats[0]); ++p)
+        parsed[p] = ParsePattern(pats[p].pattern);
+
+    for (size_t i = 0; i < sz; i++) {
         int pi = -1;
-        for (int p = 0; p < 4; p++) {
+        for (size_t p = 0; p < sizeof(pats) / sizeof(pats[0]); p++) {
+            if (parsed[p].empty() || i + parsed[p].size() > sz) continue;
             bool match = true;
-            for (int j = 0; j < pats[p].len; j++) {
-                if (pats[p].bytes[j] != -1 && t[i+j] != (uint8_t)pats[p].bytes[j]) { match = false; break; }
+            for (size_t j = 0; j < parsed[p].size(); j++) {
+                if (parsed[p][j] != -1 && t[i+j] != (uint8_t)parsed[p][j]) { match = false; break; }
             }
-            if (match) { pi = p; break; }
+            if (match) { pi = (int)p; break; }
         }
         if (pi < 0) continue;
 
         const SigPat& hit = pats[pi];
         uint64_t hitVA = tb + i;
-        printf("[BONE-SIG] %s match at RVA 0x%llX (transOff=0x%02X, wOff=0x3C)\n",
-            hit.name, (unsigned long long)(hitVA - moduleBase), hit.transOff);
+        printf("[BONE-SIG] %s match at RVA 0x%llX (transOff=0x30, wOff=0x3C)\n",
+            hit.name, (unsigned long long)(hitVA - moduleBase));
 
         // The sig directly tells us the bone-entry translation offset.
         // The 1.0f store at +0x3C confirms a 0x40-stride entry with position
         // at +transOff and w=1.0f at +0x3C.
         g_BoneSig.addr         = hitVA;
-        g_BoneSig.boneTransOff = hit.transOff;
+        g_BoneSig.boneTransOff = 0x30;
         g_BoneSig.boneWOff     = 0x3C;
         g_BoneSig.valid        = true;
 

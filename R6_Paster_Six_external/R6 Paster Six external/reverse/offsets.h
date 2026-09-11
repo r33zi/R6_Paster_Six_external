@@ -9,6 +9,7 @@ namespace OFFSETS
     // runtime so ASLR does not make a captured address point at the wrong data.
     static constexpr const char* Build = "latest";
     static constexpr const char* Updated = "2026-09-03T21:51:38.106Z";
+    static constexpr const char* Source = "https://nohwid.win/offsets/api/r6";
     static constexpr const wchar_t* Module = L"RainbowSix.exe";
 
     static constexpr uintptr_t DumpGameBase = 0x7FF66C070000ULL;
@@ -36,6 +37,28 @@ namespace OFFSETS
         "A4 70 7D BF 00 00 00 00 00 00 00 00 00 00 A0 40 "
         "00 00 A0 C0 00 00 00 00 00 00 00 00 CD CC 4C 3F "
         "00 00 00 3F 00 00 80 3E";
+
+    // Bone-entry stores from the current AnvilNext layout. A store at +0x38
+    // is the Z component of the vec3 beginning at +0x30; +0x3C is the
+    // homogeneous W value. It must never be interpreted as a vec3 at +0x38.
+    static constexpr const char* BoneZStoreSignature =
+        "? 89 ? ? 38 ? C7 ? ? 3C 00 00 80 3F";
+    static constexpr const char* BoneZStoreSignatureCompact =
+        "89 ? ? 38 C7 ? ? 3C 00 00 80 3F";
+    static constexpr const char* BoneXStoreSignature =
+        "? 89 ? ? 30 ? C7 ? ? 3C 00 00 80 3F";
+    static constexpr const char* BoneXStoreSignatureCompact =
+        "89 ? ? 30 C7 ? ? 3C 00 00 80 3F";
+
+    // DamageComponent/health structural signatures recovered for this build.
+    // These are identifiers and indirection offsets, not module RVAs.
+    static constexpr uint32_t DamageComponentClassId = 0xDB261F38;
+    static constexpr uint32_t DamageComponentClassIdAlt = 0x3FF6CF4B;
+    static constexpr uint32_t DamageComponentSize = 0x4C0;
+    static constexpr uint16_t HealthObjectTag = 0x0183;
+    static constexpr uintptr_t HealthObjectMidOffset = 0xE0;
+    static constexpr uintptr_t HealthDataOffset = 0x38;
+    static constexpr uint32_t HealthDataScanBytes = 0x320;
 
     // Runtime-resolved addresses of pointer variables (not singleton values).
     static uintptr_t pGameManagerPtr = 0;
