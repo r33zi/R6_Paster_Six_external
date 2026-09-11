@@ -178,6 +178,7 @@ static inline void FlushHealthCache() {
     std::lock_guard<std::mutex> lk(s_healthEntityMapMtx);
     s_healthEntityMap.clear();
     s_healthRetryAfter.clear();
+    s_healthDataOffset = -1;
 }
 
 // Read the live HP integer for an entity. Returns -1 when not found / invalid.
