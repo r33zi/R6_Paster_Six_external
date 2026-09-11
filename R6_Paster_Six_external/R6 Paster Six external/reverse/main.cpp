@@ -192,6 +192,8 @@ struct FBoxSphereBounds {
     double SphereRadius;
 };
 
+static Settings CaptureSettings();
+static void ApplySettings(const Settings& settings);
 static void xCreateWindow();
 static void xInitD3d();
 static void xMainLoop();
@@ -389,20 +391,10 @@ int main(int argc, const char* argv[]) {
     printf("[+] Initializing mouse controller...\n");
     MouseController::Init();
     printf("[+] Mouse controller OK\n");
-    // load persisted settings and apply to globals
-    g_cfg = LoadSettings("config.json");
-    ShowMenu = g_cfg.ShowMenu;
-    Esp_box = g_cfg.Esp_box;
-    cornered_box = g_cfg.cornered_box;
-    Aimbot = g_cfg.Aimbot;
-    playerTrail = g_cfg.playerTrail;
-    Esp_skeleton = g_cfg.Esp_skeleton;
-    fovcircle = g_cfg.fovcircle;
-    square_fov = g_cfg.square_fov;
-    fillbox = g_cfg.fillbox;
-    ChangerFOV = g_cfg.ChangerFOV;
-    crosshairSize = g_cfg.crosshairSize;
-    for (int i=0;i<4;i++) { espBoxColor[i] = g_cfg.espBoxColor[i]; filledBoxColor[i] = g_cfg.filledBoxColor[i]; crosshairColor[i] = g_cfg.crosshairColor[i]; }
+    // Prefer the named default profile, but keep existing config.json files usable.
+    if (!LoadConfigProfile("default", g_cfg))
+        LoadSettings("config.json", g_cfg);
+    ApplySettings(g_cfg);
 
     printf("\n[*] Step 1: Looking for game window...\n");
     const char* windowTitles[] = {
@@ -674,6 +666,76 @@ void aimbot(float x, float y) {
 static int g_menuTab = 0;
 // persistent settings instance
 Settings g_cfg;
+
+static void StoreColor(std::array<float, 4>& destination, const float* source) {
+    std::copy_n(source, destination.size(), destination.begin());
+}
+
+static void RestoreColor(float* destination, const std::array<float, 4>& source) {
+    std::copy_n(source.begin(), source.size(), destination);
+}
+
+static Settings CaptureSettings() {
+    Settings settings;
+    settings.ShowMenu = ShowMenu; settings.Esp_box = Esp_box; settings.cornered_box = cornered_box; settings.Esp_line = Esp_line;
+    settings.Aimbot = Aimbot; settings.playerTrail = playerTrail; settings.Esp_Distance = Esp_Distance; settings.fovcircle = fovcircle;
+    settings.square_fov = square_fov; settings.fovcirclefilled = fovcirclefilled; settings.fillbox = fillbox; settings.lineheadesp = lineheadesp;
+    settings.crosshair = crosshair; settings.Esp_skeleton = Esp_skeleton; settings.skeletonAim = skeletonAim; settings.rainbowMode = rainbowMode;
+    settings.rainbowBox = rainbowBox; settings.rainbowTrail = rainbowTrail; settings.rainbowFov = rainbowFov; settings.rainbowSnaplines = rainbowSnaplines;
+    settings.sidewardsEnabled = sidewardsEnabled; settings.shaderLabelOverlay = shaderLabelOverlay; settings.shaderIconOverlay = shaderIconOverlay;
+    settings.depthVisualization = depthVisualization; settings.trailFade = trailFade; settings.espDeathCheck = espDeathCheck; settings.espTeamCheck = espTeamCheck;
+    settings.streamerMode = streamerMode; settings.radarEnabled = radarEnabled; settings.box3dEnabled = box3dEnabled; settings.offscreenArrows = offscreenArrows;
+    settings.closestRing = closestRing; settings.distanceFade = distanceFade; settings.priorityHighlight = priorityHighlight; settings.lowHpPriority = lowHpPriority;
+    settings.showDbno = showDbno; settings.enemyCountHud = enemyCountHud; settings.roundToasts = roundToasts; settings.sessionStatsHud = sessionStatsHud;
+    settings.multiBoneAim = multiBoneAim; settings.stickyAim = stickyAim; settings.nearestVector = nearestVector; settings.corpseEsp = corpseEsp;
+    settings.ChangerFOV = ChangerFOV; settings.AimFOV = AimFOV; settings.smooth = smooth; settings.skeletonThickness = skeletonThickness;
+    settings.boxThickness = boxThickness; settings.snaplineThickness = snaplineThickness; settings.trailThickness = trailThickness;
+    settings.fovCircleThickness = fovCircleThickness; settings.crosshairSize = crosshairSize; settings.sidewardsValue = sidewardsValue;
+    settings.g_weatherIntensity = g_weatherIntensity; settings.g_weatherWind = g_weatherWind; settings.radarSize = radarSize; settings.radarRange = radarRange;
+    settings.box3dThickness = box3dThickness; settings.box3dHalfWidth = box3dHalfWidth; settings.box3dHeight = box3dHeight;
+    settings.offscreenRadius = offscreenRadius; settings.distanceFadeNear = distanceFadeNear; settings.distanceFadeFar = distanceFadeFar;
+    settings.trailLength = trailLength; settings.snaplineOrigin = snaplineOrigin; settings.trailUpdateMs = trailUpdateMs; settings.g_weatherMode = g_weatherMode;
+    settings.aimTargetMode = aimTargetMode; settings.radarCorner = radarCorner; settings.enemyCountCorner = enemyCountCorner; settings.aimCurve = aimCurve;
+    settings.VisDist = VisDist; settings.hitboxpos = hitboxpos; settings.aimKey = hotkeys::aimkey;
+    StoreColor(settings.espBoxColor, espBoxColor); StoreColor(settings.espSnaplineColor, espSnaplineColor); StoreColor(settings.espTrailColor, espTrailColor);
+    StoreColor(settings.espDistanceColor, espDistanceColor); StoreColor(settings.fovCircleColor, fovCircleColor); StoreColor(settings.crosshairColor, crosshairColor);
+    StoreColor(settings.aimbotTargetColor, aimbotTargetColor); StoreColor(settings.filledBoxColor, filledBoxColor); StoreColor(settings.espSkeletonColor, espSkeletonColor);
+    StoreColor(settings.radarBgColor, radarBgColor); StoreColor(settings.radarEnemyColor, radarEnemyColor); StoreColor(settings.radarLocalColor, radarLocalColor);
+    StoreColor(settings.box3dColor, box3dColor); StoreColor(settings.offscreenColor, offscreenColor); StoreColor(settings.closestRingColor, closestRingColor);
+    StoreColor(settings.priorityColor, priorityColor); StoreColor(settings.lowHpColor, lowHpColor); StoreColor(settings.dbnoColor, dbnoColor);
+    StoreColor(settings.nearestVectorColor, nearestVectorColor); StoreColor(settings.corpseColor, corpseColor);
+    return settings;
+}
+
+static void ApplySettings(const Settings& settings) {
+    ShowMenu = settings.ShowMenu; Esp_box = settings.Esp_box; cornered_box = settings.cornered_box; Esp_line = settings.Esp_line;
+    Aimbot = settings.Aimbot; playerTrail = settings.playerTrail; Esp_Distance = settings.Esp_Distance; fovcircle = settings.fovcircle;
+    square_fov = settings.square_fov; fovcirclefilled = settings.fovcirclefilled; fillbox = settings.fillbox; lineheadesp = settings.lineheadesp;
+    crosshair = settings.crosshair; Esp_skeleton = settings.Esp_skeleton; skeletonAim = settings.skeletonAim; rainbowMode = settings.rainbowMode;
+    rainbowBox = settings.rainbowBox; rainbowTrail = settings.rainbowTrail; rainbowFov = settings.rainbowFov; rainbowSnaplines = settings.rainbowSnaplines;
+    sidewardsEnabled = settings.sidewardsEnabled; shaderLabelOverlay = settings.shaderLabelOverlay; shaderIconOverlay = settings.shaderIconOverlay;
+    depthVisualization = settings.depthVisualization; trailFade = settings.trailFade; espDeathCheck = settings.espDeathCheck; espTeamCheck = settings.espTeamCheck;
+    streamerMode = settings.streamerMode; radarEnabled = settings.radarEnabled; box3dEnabled = settings.box3dEnabled; offscreenArrows = settings.offscreenArrows;
+    closestRing = settings.closestRing; distanceFade = settings.distanceFade; priorityHighlight = settings.priorityHighlight; lowHpPriority = settings.lowHpPriority;
+    showDbno = settings.showDbno; enemyCountHud = settings.enemyCountHud; roundToasts = settings.roundToasts; sessionStatsHud = settings.sessionStatsHud;
+    multiBoneAim = settings.multiBoneAim; stickyAim = settings.stickyAim; nearestVector = settings.nearestVector; corpseEsp = settings.corpseEsp;
+    ChangerFOV = settings.ChangerFOV; AimFOV = settings.AimFOV; smooth = settings.smooth; skeletonThickness = settings.skeletonThickness;
+    boxThickness = settings.boxThickness; snaplineThickness = settings.snaplineThickness; trailThickness = settings.trailThickness;
+    fovCircleThickness = settings.fovCircleThickness; crosshairSize = settings.crosshairSize; sidewardsValue = settings.sidewardsValue;
+    g_weatherIntensity = settings.g_weatherIntensity; g_weatherWind = settings.g_weatherWind; g_wfxIntensity = settings.g_weatherIntensity; g_wfxWindX = settings.g_weatherWind;
+    radarSize = settings.radarSize; radarRange = settings.radarRange; box3dThickness = settings.box3dThickness; box3dHalfWidth = settings.box3dHalfWidth;
+    box3dHeight = settings.box3dHeight; offscreenRadius = settings.offscreenRadius; distanceFadeNear = settings.distanceFadeNear; distanceFadeFar = settings.distanceFadeFar;
+    trailLength = settings.trailLength; snaplineOrigin = settings.snaplineOrigin; trailUpdateMs = settings.trailUpdateMs; g_weatherMode = settings.g_weatherMode;
+    aimTargetMode = settings.aimTargetMode; radarCorner = settings.radarCorner; enemyCountCorner = settings.enemyCountCorner; aimCurve = settings.aimCurve;
+    VisDist = settings.VisDist; hitboxpos = settings.hitboxpos; hotkeys::aimkey = settings.aimKey; g_wfxInited = false;
+    RestoreColor(espBoxColor, settings.espBoxColor); RestoreColor(espSnaplineColor, settings.espSnaplineColor); RestoreColor(espTrailColor, settings.espTrailColor);
+    RestoreColor(espDistanceColor, settings.espDistanceColor); RestoreColor(fovCircleColor, settings.fovCircleColor); RestoreColor(crosshairColor, settings.crosshairColor);
+    RestoreColor(aimbotTargetColor, settings.aimbotTargetColor); RestoreColor(filledBoxColor, settings.filledBoxColor); RestoreColor(espSkeletonColor, settings.espSkeletonColor);
+    RestoreColor(radarBgColor, settings.radarBgColor); RestoreColor(radarEnemyColor, settings.radarEnemyColor); RestoreColor(radarLocalColor, settings.radarLocalColor);
+    RestoreColor(box3dColor, settings.box3dColor); RestoreColor(offscreenColor, settings.offscreenColor); RestoreColor(closestRingColor, settings.closestRingColor);
+    RestoreColor(priorityColor, settings.priorityColor); RestoreColor(lowHpColor, settings.lowHpColor); RestoreColor(dbnoColor, settings.dbnoColor);
+    RestoreColor(nearestVectorColor, settings.nearestVectorColor); RestoreColor(corpseColor, settings.corpseColor);
+}
 
 void SubmitDrawCalls() {
     FlushOverlayPipeline(Esp_box, cornered_box, Esp_line, Esp_Distance, VisDist,
@@ -1142,40 +1204,43 @@ void render() {
             ImGui::TextColored(kTextMute, "build  %s  %s", __DATE__, __TIME__);
 
             SectionLabel("Config");
-            ImGui::TextColored(kTextMute, "save or load user settings to disk");
-            if (ImGui::Button("Save Settings", ImVec2(120, 24))) {
-                // update config from current globals
-                g_cfg.ShowMenu = ShowMenu;
-                g_cfg.Esp_box = Esp_box;
-                g_cfg.cornered_box = cornered_box;
-                g_cfg.Aimbot = Aimbot;
-                g_cfg.playerTrail = playerTrail;
-                g_cfg.Esp_skeleton = Esp_skeleton;
-                g_cfg.fovcircle = fovcircle;
-                g_cfg.square_fov = square_fov;
-                g_cfg.fillbox = fillbox;
-                g_cfg.ChangerFOV = ChangerFOV;
-                g_cfg.crosshairSize = crosshairSize;
-                for (int i=0;i<4;i++) { g_cfg.espBoxColor[i] = espBoxColor[i]; g_cfg.filledBoxColor[i] = filledBoxColor[i]; g_cfg.crosshairColor[i] = crosshairColor[i]; }
-                SaveSettings(g_cfg, "config.json");
+            ImGui::TextColored(kTextMute, "named profiles are saved in the configs folder");
+            static char profileName[49] = "default";
+            static std::string profileStatus;
+            ImGui::InputText("Profile", profileName, IM_ARRAYSIZE(profileName));
+            if (ImGui::Button("Save profile", ImVec2(120, 24))) {
+                g_cfg = CaptureSettings();
+                profileStatus = SaveConfigProfile(profileName, g_cfg) ? "profile saved" : "use letters, numbers, _ or - (up to 48 characters)";
             }
             ImGui::SameLine();
-            if (ImGui::Button("Load Settings", ImVec2(120, 24))) {
-                g_cfg = LoadSettings("config.json");
-                // apply to globals
-                ShowMenu = g_cfg.ShowMenu;
-                Esp_box = g_cfg.Esp_box;
-                cornered_box = g_cfg.cornered_box;
-                Aimbot = g_cfg.Aimbot;
-                playerTrail = g_cfg.playerTrail;
-                Esp_skeleton = g_cfg.Esp_skeleton;
-                fovcircle = g_cfg.fovcircle;
-                square_fov = g_cfg.square_fov;
-                fillbox = g_cfg.fillbox;
-                ChangerFOV = g_cfg.ChangerFOV;
-                crosshairSize = g_cfg.crosshairSize;
-                for (int i=0;i<4;i++) { espBoxColor[i] = g_cfg.espBoxColor[i]; filledBoxColor[i] = g_cfg.filledBoxColor[i]; crosshairColor[i] = g_cfg.crosshairColor[i]; }
+            if (ImGui::Button("Load profile", ImVec2(120, 24))) {
+                Settings loaded;
+                if (LoadConfigProfile(profileName, loaded)) {
+                    g_cfg = loaded;
+                    ApplySettings(g_cfg);
+                    profileStatus = "profile loaded";
+                } else {
+                    profileStatus = "profile not found or invalid";
+                }
             }
+            ImGui::SameLine();
+            if (ImGui::Button("Delete", ImVec2(80, 24)))
+                profileStatus = DeleteConfigProfile(profileName) ? "profile deleted" : "profile could not be deleted";
+
+            const std::vector<std::string> profiles = ListConfigProfiles();
+            if (!profiles.empty() && ImGui::BeginCombo("Saved profiles", profileName)) {
+                for (const std::string& profile : profiles) {
+                    const bool selected = profile == profileName;
+                    if (ImGui::Selectable(profile.c_str(), selected))
+                        snprintf(profileName, IM_ARRAYSIZE(profileName), "%s", profile.c_str());
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            } else if (profiles.empty()) {
+                ImGui::TextColored(kTextMute, "no saved profiles yet");
+            }
+            if (!profileStatus.empty())
+                ImGui::TextColored(kTextMute, "%s", profileStatus.c_str());
             ImGui::TextColored(kTextMute, "pid    %lu   base 0x%llX", processID, (unsigned long long)base_address);
             ImGui::TextColored(kTextMute, "cache  %d entities   players %d", (int)g_syncMap.size(), g_activeVtx);
             if (g_shaderResReady)
