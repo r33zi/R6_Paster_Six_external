@@ -254,15 +254,22 @@ static bool  g_toastState = false;
 static constexpr DWORD TOAST_DURATION_MS = 1500;
 
 static void ProcessHotkeys() {
-    if (MouseController::GetAsyncKeyState(VK_INSERT) & 1)
+    static bool insertWasDown = false;
+    static bool f2WasDown = false;
+    const bool insertDown = (::GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
+    const bool f2Down = (::GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+
+    if (insertDown && !insertWasDown)
         ShowMenu = !ShowMenu;
-    if (MouseController::GetAsyncKeyState(VK_F2) & 1) {
+    if (f2Down && !f2WasDown) {
         bool cur = g_manualInMatch.load(std::memory_order_acquire);
         bool next = !cur;
         g_manualInMatch.store(next, std::memory_order_release);
         g_toastState = next;
         g_toastStartTick = GetTickCount();
     }
+    insertWasDown = insertDown;
+    f2WasDown = f2Down;
 }
 
 
@@ -1338,16 +1345,23 @@ void xMainLoop() {
             if (ShowMenu) style &= ~WS_EX_TRANSPARENT;
             else style |= WS_EX_TRANSPARENT;
             SetWindowLongPtr(Window, GWL_EXSTYLE, style);
-            SetWindowPos(Window, NULL, 0, 0, 0, 0,
-                SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+            SetWindowPos(Window, ShowMenu ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+                SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
             lastMenuState = ShowMenu;
         }
 
         HWND hwnd_active = GetForegroundWindow();
         if (hwnd_active == hwnd) {
-            HWND hwndtest = GetWindow(hwnd_active, GW_HWNDPREV);
-            SetWindowPos(Window, hwndtest, 0, 0, 0, 0,
-                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
+            if (ShowMenu) {
+                SetWindowPos(Window, HWND_TOPMOST, 0, 0, 0, 0,
+                    SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            } else {
+                HWND hwndtest = GetWindow(hwnd_active, GW_HWNDPREV);
+                if (hwndtest != Window) {
+                    SetWindowPos(Window, hwndtest, 0, 0, 0, 0,
+                        SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
+                }
+            }
         }
         if (GetAsyncKeyState(0x23) & 1) exit(8);
         RECT target = {};
