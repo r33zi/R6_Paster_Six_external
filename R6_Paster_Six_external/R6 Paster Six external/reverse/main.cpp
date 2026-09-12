@@ -520,8 +520,11 @@ void xCreateWindow() {
     if (!ShowMenu) extendedStyle |= WS_EX_TRANSPARENT;
     Window = CreateWindowExA(extendedStyle, "notepad", NULL, WS_POPUP, target.left, target.top,
         Width, Height, NULL, NULL, NULL, NULL);
-    ShowWindow(Window, SW_SHOWNOACTIVATE);
     DwmExtendFrameIntoClientArea(Window, &Margin);
+    // WS_EX_LAYERED windows remain invisible until their layered attributes
+    // (or an UpdateLayeredWindow surface) have been initialized.
+    SetLayeredWindowAttributes(Window, 0, 255, LWA_ALPHA);
+    ShowWindow(Window, SW_SHOWNOACTIVATE);
     UpdateWindow(Window);
 }
 
