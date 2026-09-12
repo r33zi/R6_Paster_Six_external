@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -280,6 +281,35 @@ static bool LookupFuncBounds(uint64_t moduleBase, uint32_t rva, uint32_t& outBeg
         }
     }
     return false;
+}
+
+// Resolve the configured Actor_caller signature to the start of its owning
+// function. The older entity scan below searches for a separate hard-coded
+// anchor, so it can select an unrelated nearby call when that layout drifts.
+static uint64_t FindConfiguredActorFunction(uint64_t moduleBase) {
+    if (!g_textCache.valid) return 0;
+
+    const std::vector<int> pattern = ParsePattern(OFFSETS::ActorCallerSignature);
+    const size_t match = ScanBufFirst(g_textCache.data.data(),
+        (size_t)g_textCache.textSize, pattern);
+    if (match == SIZE_MAX) {
+        printf("[ENTITY-SCAN] Configured Actor_caller signature not found\n");
+        return 0;
+    }
+
+    const uint64_t matchVA = g_textCache.textBase + match;
+    uint32_t begin = 0, end = 0;
+    if (!LoadPdata(moduleBase) ||
+        !LookupFuncBounds(moduleBase, (uint32_t)(matchVA - moduleBase), begin, end)) {
+        printf("[ENTITY-SCAN] Actor_caller matched at RVA 0x%llX but has no function bounds\n",
+            (unsigned long long)(matchVA - moduleBase));
+        return 0;
+    }
+
+    const uint64_t functionVA = moduleBase + begin;
+    printf("[ENTITY-SCAN] Actor_caller matched at RVA 0x%llX -> function RVA 0x%X\n",
+        (unsigned long long)(matchVA - moduleBase), begin);
+    return functionVA;
 }
 
 static bool ScanSkelXref(uint64_t moduleBase) {
