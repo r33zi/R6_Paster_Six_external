@@ -197,6 +197,7 @@ static Settings CaptureSettings();
 static void ApplySettings(const Settings& settings);
 static void xCreateWindow();
 static void xInitD3d();
+static bool xResetD3d(int width, int height);
 static void xMainLoop();
 static void xShutdown();
 void SubmitDrawCalls();
@@ -207,6 +208,8 @@ static HWND Window = NULL;
 IDirect3D9Ex* p_Object = NULL;
 static LPDIRECT3DDEVICE9 D3dDevice = NULL;
 static LPDIRECT3DVERTEXBUFFER9 TriBuf = NULL;
+static int g_pendingBackBufferWidth = 0;
+static int g_pendingBackBufferHeight = 0;
 
 typedef struct { float X, Y, Z; } FVector;
 typedef struct { float X, Y; } FVector2D;
@@ -510,14 +513,17 @@ void xCreateWindow() {
     ScreenCenterY = Height / 2;
 
     WNDCLASS windowClass = { 0 };
-    windowClass.hbrBackground = (HBRUSH)GetStockObject(WHITE_BRUSH);
+    // A null background prevents a white GDI erase from flashing through the
+    // layered surface while the game changes resolution or display mode.
+    windowClass.hbrBackground = NULL;
     windowClass.hCursor = LoadCursor(NULL, IDC_ARROW);
     windowClass.hInstance = NULL;
     windowClass.lpfnWndProc = WinProc;
     windowClass.lpszClassName = "notepad";
     windowClass.style = CS_HREDRAW | CS_VREDRAW;
     RegisterClass(&windowClass);
-    DWORD extendedStyle = WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE;
+    DWORD extendedStyle = WS_EX_TOOLWINDOW | WS_EX_LAYERED |
+        WS_EX_NOACTIVATE | WS_EX_TOPMOST;
     if (!ShowMenu) extendedStyle |= WS_EX_TRANSPARENT;
     Window = CreateWindowExA(extendedStyle, "notepad", NULL, WS_POPUP, target.left, target.top,
         Width, Height, NULL, NULL, NULL, NULL);
@@ -541,6 +547,7 @@ void xInitD3d() {
     d3dpp.EnableAutoDepthStencil = TRUE;
     d3dpp.hDeviceWindow = Window;
     d3dpp.Windowed = TRUE;
+    d3dpp.PresentationInterval = D3DPRESENT_INTERVAL_ONE;
     if (FAILED(p_Object->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, Window,
         D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &D3dDevice))) {
         p_Object->Release(); p_Object = nullptr; exit(4);
@@ -661,7 +668,24 @@ void xInitD3d() {
         m_pFontDisplay = io.Fonts->AddFontFromFileTTF(dispPaths[i], 20.0f, &cfg, io.Fonts->GetGlyphRangesDefault());
     if (!m_pFontDisplay) m_pFontDisplay = m_pFont;
 
+    // CreateWindowEx emits the initial WM_SIZE before the D3D device exists;
+    // this size is already reflected in d3dpp and must not trigger a redundant
+    // reset on the first visible frame.
+    g_pendingBackBufferWidth = 0;
+    g_pendingBackBufferHeight = 0;
+
     p_Object->Release(); p_Object = nullptr;
+}
+
+static bool xResetD3d(int width, int height) {
+    if (!D3dDevice || width <= 0 || height <= 0) return false;
+    ImGui_ImplDX9_InvalidateDeviceObjects();
+    d3dpp.BackBufferWidth = width;
+    d3dpp.BackBufferHeight = height;
+    const HRESULT hr = D3dDevice->Reset(&d3dpp);
+    if (FAILED(hr)) return false;
+    ImGui_ImplDX9_CreateDeviceObjects();
+    return true;
 }
 
 void aimbot(float x, float y) {
@@ -1333,9 +1357,7 @@ void render() {
     }
     HRESULT result = D3dDevice->Present(nullptr, nullptr, nullptr, nullptr);
     if (result == D3DERR_DEVICELOST && D3dDevice->TestCooperativeLevel() == D3DERR_DEVICENOTRESET) {
-        ImGui_ImplDX9_InvalidateDeviceObjects();
-        D3dDevice->Reset(&d3dpp);
-        ImGui_ImplDX9_CreateDeviceObjects();
+        xResetD3d(Width, Height);
     }
 }
 
@@ -1361,41 +1383,42 @@ void xMainLoop() {
             if (ShowMenu) style &= ~WS_EX_TRANSPARENT;
             else style |= WS_EX_TRANSPARENT;
             SetWindowLongPtr(Window, GWL_EXSTYLE, style);
-            SetWindowPos(Window, ShowMenu ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+            // The overlay must remain above the game in both modes. Hidden-menu
+            // input is controlled by WS_EX_TRANSPARENT, not by demoting z-order.
+            SetWindowPos(Window, HWND_TOPMOST, 0, 0, 0, 0,
                 SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
             lastMenuState = ShowMenu;
         }
 
-        HWND hwnd_active = GetForegroundWindow();
-        if (hwnd_active == hwnd) {
-            if (ShowMenu) {
-                SetWindowPos(Window, HWND_TOPMOST, 0, 0, 0, 0,
-                    SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-            } else {
-                HWND hwndtest = GetWindow(hwnd_active, GW_HWNDPREV);
-                if (hwndtest != Window) {
-                    SetWindowPos(Window, hwndtest, 0, 0, 0, 0,
-                        SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
-                }
-            }
-        }
         if (GetAsyncKeyState(0x23) & 1) exit(8);
         RECT target = {};
-        if (!GetTargetClientBounds(target)) {
+        if (IsIconic(hwnd) || !IsWindowVisible(hwnd) || !GetTargetClientBounds(target)) {
+            ShowWindow(Window, SW_HIDE);
             Sleep(16);
             continue;
         }
+        if (!IsWindowVisible(Window))
+            ShowWindow(Window, SW_SHOWNOACTIVATE);
         if (!EqualRect(&target, &oldTarget)) {
             oldTarget = target;
             Width = target.right - target.left;
             Height = target.bottom - target.top;
             ScreenCenterX = Width / 2;
             ScreenCenterY = Height / 2;
-            d3dpp.BackBufferWidth = Width; d3dpp.BackBufferHeight = Height;
-            // SetWindowPos synchronously emits WM_SIZE when dimensions change;
-            // WinProc performs the single ImGui-aware device reset there.
-            SetWindowPos(Window, HWND_TOP, target.left, target.top, Width, Height,
+            SetWindowPos(Window, HWND_TOPMOST, target.left, target.top, Width, Height,
                 SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        }
+        if (g_pendingBackBufferWidth > 0 && g_pendingBackBufferHeight > 0) {
+            const int resetWidth = g_pendingBackBufferWidth;
+            const int resetHeight = g_pendingBackBufferHeight;
+            g_pendingBackBufferWidth = 0;
+            g_pendingBackBufferHeight = 0;
+            if (!xResetD3d(resetWidth, resetHeight)) {
+                g_pendingBackBufferWidth = resetWidth;
+                g_pendingBackBufferHeight = resetHeight;
+                Sleep(16);
+                continue;
+            }
         }
         render();
     }
@@ -1409,15 +1432,15 @@ LRESULT CALLBACK WinProc(HWND hWnd, UINT Message, WPARAM wParam, LPARAM lParam) 
     if (Message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
     if (ImGui_ImplWin32_WndProcHandler(hWnd, Message, wParam, lParam)) return true;
     switch (Message) {
+    case WM_ERASEBKGND:
+        return 1;
     case WM_DESTROY: xShutdown(); PostQuitMessage(0); exit(4); break;
     case WM_SIZE:
-        if (D3dDevice != NULL && wParam != SIZE_MINIMIZED) {
-            ImGui_ImplDX9_InvalidateDeviceObjects();
-            d3dpp.BackBufferWidth = LOWORD(lParam); d3dpp.BackBufferHeight = HIWORD(lParam);
-            HRESULT hr = D3dDevice->Reset(&d3dpp);
-            if (hr == D3DERR_INVALIDCALL) IM_ASSERT(0);
-            ImGui_ImplDX9_CreateDeviceObjects();
-        } break;
+        if (wParam != SIZE_MINIMIZED) {
+            g_pendingBackBufferWidth = LOWORD(lParam);
+            g_pendingBackBufferHeight = HIWORD(lParam);
+        }
+        break;
     default: return DefWindowProc(hWnd, Message, wParam, lParam); break;
     }
     return 0;
