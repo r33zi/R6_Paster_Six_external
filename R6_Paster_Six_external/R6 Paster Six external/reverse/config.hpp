@@ -3,11 +3,16 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include "json.hpp"
 
@@ -197,10 +202,42 @@ inline bool SaveSettings(const Settings& settings, const std::filesystem::path& 
 	try {
 		const auto parent = path.parent_path();
 		if (!parent.empty()) std::filesystem::create_directories(parent);
-		std::ofstream out(path, std::ios::out | std::ios::trunc);
+
+		auto temporaryPath = path;
+		temporaryPath += ".tmp";
+		std::ofstream out(temporaryPath, std::ios::out | std::ios::trunc);
 		if (!out.good()) return false;
 		out << json(settings).dump(4);
-		return out.good();
+		out.flush();
+		if (!out.good()) {
+			out.close();
+			std::error_code cleanupError;
+			std::filesystem::remove(temporaryPath, cleanupError);
+			return false;
+		}
+		out.close();
+		if (out.fail()) {
+			std::error_code cleanupError;
+			std::filesystem::remove(temporaryPath, cleanupError);
+			return false;
+		}
+
+#ifdef _WIN32
+		if (!MoveFileExW(temporaryPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+			std::error_code cleanupError;
+			std::filesystem::remove(temporaryPath, cleanupError);
+			return false;
+		}
+#else
+		std::error_code replaceError;
+		std::filesystem::rename(temporaryPath, path, replaceError);
+		if (replaceError) {
+			std::error_code cleanupError;
+			std::filesystem::remove(temporaryPath, cleanupError);
+			return false;
+		}
+#endif
+		return true;
 	} catch (...) {
 		return false;
 	}
@@ -228,7 +265,21 @@ inline Settings LoadSettings(const std::filesystem::path& path) {
 }
 
 inline std::filesystem::path ConfigDirectory() {
-	return std::filesystem::current_path() / "configs";
+#ifdef _WIN32
+	if (const wchar_t* localAppData = _wgetenv(L"LOCALAPPDATA"); localAppData && *localAppData)
+		return std::filesystem::path(localAppData) / "R6 Paster Six external" / "configs";
+
+	wchar_t executablePath[32768] = {};
+	const DWORD length = GetModuleFileNameW(nullptr, executablePath, static_cast<DWORD>(std::size(executablePath)));
+	if (length > 0 && length < std::size(executablePath))
+		return std::filesystem::path(executablePath).parent_path() / "configs";
+#else
+	if (const char* xdgConfigHome = std::getenv("XDG_CONFIG_HOME"); xdgConfigHome && *xdgConfigHome)
+		return std::filesystem::path(xdgConfigHome) / "r6-paster-six-external" / "configs";
+	if (const char* userHome = std::getenv("HOME"); userHome && *userHome)
+		return std::filesystem::path(userHome) / ".config" / "r6-paster-six-external" / "configs";
+#endif
+	return std::filesystem::temp_directory_path() / "r6-paster-six-external" / "configs";
 }
 
 inline bool IsValidConfigProfileName(std::string_view name) {

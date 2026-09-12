@@ -1207,10 +1207,14 @@ void render() {
             ImGui::TextColored(kTextMute, "named profiles are saved in the configs folder");
             static char profileName[49] = "default";
             static std::string profileStatus;
+            static std::vector<std::string> profiles = ListConfigProfiles();
+            const auto refreshProfiles = []() { profiles = ListConfigProfiles(); };
             ImGui::InputText("Profile", profileName, IM_ARRAYSIZE(profileName));
             if (ImGui::Button("Save profile", ImVec2(120, 24))) {
                 g_cfg = CaptureSettings();
-                profileStatus = SaveConfigProfile(profileName, g_cfg) ? "profile saved" : "use letters, numbers, _ or - (up to 48 characters)";
+                const bool saved = SaveConfigProfile(profileName, g_cfg);
+                profileStatus = saved ? "profile saved" : "use letters, numbers, _ or - (up to 48 characters)";
+                refreshProfiles();
             }
             ImGui::SameLine();
             if (ImGui::Button("Load profile", ImVec2(120, 24))) {
@@ -1224,11 +1228,14 @@ void render() {
                 }
             }
             ImGui::SameLine();
-            if (ImGui::Button("Delete", ImVec2(80, 24)))
-                profileStatus = DeleteConfigProfile(profileName) ? "profile deleted" : "profile could not be deleted";
+            if (ImGui::Button("Delete", ImVec2(80, 24))) {
+                const bool deleted = DeleteConfigProfile(profileName);
+                profileStatus = deleted ? "profile deleted" : "profile could not be deleted";
+                refreshProfiles();
+            }
 
-            const std::vector<std::string> profiles = ListConfigProfiles();
             if (!profiles.empty() && ImGui::BeginCombo("Saved profiles", profileName)) {
+                refreshProfiles();
                 for (const std::string& profile : profiles) {
                     const bool selected = profile == profileName;
                     if (ImGui::Selectable(profile.c_str(), selected))
