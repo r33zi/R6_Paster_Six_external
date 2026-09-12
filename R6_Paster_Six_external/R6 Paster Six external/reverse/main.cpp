@@ -449,8 +449,13 @@ int main(int argc, const char* argv[]) {
 
     printf("\n[*] Step 3.5: Scanning R6 structures...\n");
     if (module_size == 0) module_size = 0x18000000;
-    if (InitRenderPipeline(base_address, module_size)) printf("[+] R6 scanner OK!\n");
-    else printf("[!] R6 scan failed\n");
+    const bool pipelineReady = InitRenderPipeline(base_address, module_size);
+    if (pipelineReady) {
+        g_manualInMatch.store(true, std::memory_order_release);
+        printf("[+] R6 scanner OK - ESP engaged\n");
+    } else {
+        printf("[!] R6 scan failed\n");
+    }
 
     g_lastRainbowTick = GetTickCount();
     printf("\n[*] Step 4: Creating overlay...\n");
@@ -504,11 +509,12 @@ void xCreateWindow() {
     windowClass.lpszClassName = "notepad";
     windowClass.style = CS_HREDRAW | CS_VREDRAW;
     RegisterClass(&windowClass);
-    Window = CreateWindow("notepad", NULL, WS_POPUP, target.left, target.top,
+    DWORD extendedStyle = WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE;
+    if (!ShowMenu) extendedStyle |= WS_EX_TRANSPARENT;
+    Window = CreateWindowExA(extendedStyle, "notepad", NULL, WS_POPUP, target.left, target.top,
         Width, Height, NULL, NULL, NULL, NULL);
-    ShowWindow(Window, SW_SHOW);
+    ShowWindow(Window, SW_SHOWNOACTIVATE);
     DwmExtendFrameIntoClientArea(Window, &Margin);
-    SetWindowLong(Window, GWL_EXSTYLE, WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_LAYERED);
     UpdateWindow(Window);
 }
 
@@ -859,7 +865,7 @@ void render() {
                 g_toastStartTick = GetTickCount();
             }
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Toggle engagement (F2)\nON before round starts. OFF returning to menu.");
+                ImGui::SetTooltip("ESP engages after the scanner initializes.\nF2 toggles processing on or off.");
 
             // Overlay: dot + status text + hint
             dl->AddCircleFilled(ImVec2(origin.x + 4, origin.y + 10), 4.0f,
@@ -1332,13 +1338,16 @@ void xMainLoop() {
             if (ShowMenu) style &= ~WS_EX_TRANSPARENT;
             else style |= WS_EX_TRANSPARENT;
             SetWindowLongPtr(Window, GWL_EXSTYLE, style);
+            SetWindowPos(Window, NULL, 0, 0, 0, 0,
+                SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
             lastMenuState = ShowMenu;
         }
 
         HWND hwnd_active = GetForegroundWindow();
         if (hwnd_active == hwnd) {
             HWND hwndtest = GetWindow(hwnd_active, GW_HWNDPREV);
-            SetWindowPos(Window, hwndtest, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            SetWindowPos(Window, hwndtest, 0, 0, 0, 0,
+                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
         }
         if (GetAsyncKeyState(0x23) & 1) exit(8);
         RECT target = {};
@@ -1352,7 +1361,7 @@ void xMainLoop() {
         POINT p; GetCursorPos(&p);
         io.MousePos.x = p.x - target.left;
         io.MousePos.y = p.y - target.top;
-        io.MouseDown[0] = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+        io.MouseDown[0] = ShowMenu && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
 
         if (!EqualRect(&target, &oldTarget)) {
             oldTarget = target;
@@ -1375,6 +1384,7 @@ void xMainLoop() {
 }
 
 LRESULT CALLBACK WinProc(HWND hWnd, UINT Message, WPARAM wParam, LPARAM lParam) {
+    if (Message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
     if (ImGui_ImplWin32_WndProcHandler(hWnd, Message, wParam, lParam)) return true;
     switch (Message) {
     case WM_DESTROY: xShutdown(); PostQuitMessage(0); exit(4); break;
