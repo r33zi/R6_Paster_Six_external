@@ -234,6 +234,7 @@ static std::vector<uint64_t> g_frameSyncCandidates;
 static size_t   g_frameSyncCandidateIndex = 0;
 static uint64_t g_captureStartPlayerCount = 0;
 static uint64_t g_imageBase = 0;
+static uint64_t g_imageSize = 0;
 static uint64_t g_ShellPage = 0;
 static uint64_t g_RingAddr = 0;
 static bool     g_frameSyncActive = false;
@@ -318,9 +319,24 @@ static bool IsProjectionMatrixUsable(const Matrix4x4& matrix) {
     return nonZeroComponents >= 4;
 }
 
+static bool RefreshProjectionFromViewData() {
+    if (!g_pViewDataPtr) return false;
+    const uint64_t viewData = read<uint64_t>(g_pViewDataPtr);
+    if (!IsValidAddr(viewData)) return false;
+    const Matrix4x4 matrix = read<Matrix4x4>(viewData + 0x250);
+    if (!IsProjectionMatrixUsable(matrix)) return false;
+    if (g_projectionAddr != viewData) {
+        g_projectionAddr = viewData;
+        printf("[W2S] ViewData projection refreshed: 0x%llX\n",
+            (unsigned long long)viewData);
+    }
+    return true;
+}
+
 static DWORD WINAPI RescanProjectionThread(LPVOID) {
-    uint64_t newProjection = ScanForViewTrans(g_imageBase, 0x18000000);
-    if (newProjection)
+    uint64_t newProjection = ScanForViewTrans(g_imageBase, g_imageSize);
+    if (newProjection && IsProjectionMatrixUsable(
+            read<Matrix4x4>(newProjection + 0x250)))
         g_pendingProjectionAddr.store(newProjection, std::memory_order_release);
     g_projectionScanActive.store(false, std::memory_order_release);
     return 0;
@@ -762,6 +778,12 @@ static void FindRound() {
 static void PollFrameRing() {
     if (!g_RingAddr) return;
     uint64_t wi=read<uint64_t>(g_RingAddr);
+    // The producer is a fixed 256-entry ring. If it wrapped between render
+    // polls, only the newest entries still exist; replaying every overwritten
+    // index reads duplicate/stale slots and can stall a frame for thousands of
+    // iterations on a hot capture site.
+    if (wi > g_ReadIdx + RING_SZ)
+        g_ReadIdx = wi - RING_SZ;
     uint64_t new_captures = 0, rejected = 0;
     while (g_ReadIdx < wi) {
         uint64_t idx=g_ReadIdx&(RING_SZ-1);
@@ -972,6 +994,7 @@ static void AppendTrailSample(TrailBuffer* t, Vec3 pos) {
 
 static bool InitRenderPipeline(uint64_t base, uint64_t size) {
     g_imageBase=base;
+    g_imageSize=size;
     printf("[R6] Offsets build=%s updated=%s\n", OFFSETS::Build, OFFSETS::Updated);
     auto secs=GetPESections(base);
     if(secs.empty()) return false;
@@ -993,29 +1016,6 @@ static bool InitRenderPipeline(uint64_t base, uint64_t size) {
     OFFSETS::pViewDataPtr = g_pViewDataPtr;
     OFFSETS::pCameraManagerPtr = g_pCameraManagerPtr;
 
-    // If we have ViewData from sigs, use it as the projection source directly
-    // instead of the slow heap scan. ViewData → +0x250 = view matrix,
-    // +0x190 = camera origin (same offsets as the heap-scan result).
-    if (g_pViewDataPtr) {
-        uint64_t vd = read<uint64_t>(g_pViewDataPtr);
-        if (IsValidAddr(vd)) {
-            g_projectionAddr = vd;
-            printf("[R6] ViewData from sig: 0x%llX → projection=0x%llX\n",
-                (unsigned long long)g_pViewDataPtr, (unsigned long long)vd);
-        }
-    }
-    if (g_projectionAddr && !IsProjectionMatrixUsable(QueryProjectionMatrix())) {
-        printf("[R6] Signature ViewData has no usable projection matrix; scanning heap fallback\n");
-        g_projectionAddr = 0;
-    }
-    if (!g_projectionAddr)
-        g_projectionAddr = ScanForViewTrans(base, size);
-    if (!IsValidAddr(g_projectionAddr) ||
-        !IsProjectionMatrixUsable(QueryProjectionMatrix())) {
-        g_projectionAddr = 0;
-        return false;
-    }
-
     auto calls=FindEntityFunctionCalls(base);
     g_frameSyncAddr = 0;
     g_frameSyncCandidates.clear();
@@ -1027,18 +1027,28 @@ static bool InitRenderPipeline(uint64_t base, uint64_t size) {
             g_frameSyncCandidates.push_back(address);
     };
 
-    // Prefer the signature supplied by the active offsets source, then retain
-    // the legacy nearby-call candidates as runtime fallbacks.
-    addFrameSyncCandidate(FindConfiguredActorFunction(base));
-    for (const auto& call : calls) addFrameSyncCandidate(call.targetVA);
+    // Prefer the exact capture site supplied by the matching offsets dump.
+    // Nearby call targets retain RCX semantics more reliably than the owning
+    // function of Actor_caller, so keep that function entry as the final fallback.
     if (OFFSETS::ActorPatchRva + 32 <= size)
         addFrameSyncCandidate(base + OFFSETS::ActorPatchRva);
+    for (const auto& call : calls) addFrameSyncCandidate(call.targetVA);
+    addFrameSyncCandidate(FindConfiguredActorFunction(base));
 
     if (!g_frameSyncCandidates.empty())
         g_frameSyncAddr = g_frameSyncCandidates.front();
     if(!g_frameSyncAddr) return false;
     printf("[ENTITY-SCAN] %zu capture candidates; starting at 0x%llX\n",
         g_frameSyncCandidates.size(), (unsigned long long)g_frameSyncAddr);
+
+    // ViewData is commonly empty until a map has loaded. Entity discovery is
+    // still usable at that point, so finish initialization and recover the
+    // projection asynchronously instead of permanently disabling ESP.
+    if (!RefreshProjectionFromViewData()) {
+        g_projectionAddr = 0;
+        printf("[R6] Projection is not live yet; background recovery scheduled\n");
+        StartProjectionRescan();
+    }
     FindRound();
     if (ScanSkelXref(base)) {
         printf("[R6] Skeleton xref: compIdx=+0x%X compArr=+0x%X func=0x%llX\n",
@@ -1140,37 +1150,16 @@ static void PollSyncBuffer(int W, int H, int maxD) {
         if (g_frameSyncActive) DetachFrameSync();
         RestoreSidewards();
 
-        // Step 2: capture the page pointer but DO NOT null the globals yet.
-        // The globals stay live so the delayed-free thread can still see them,
-        // and so any in-flight shellcode execution can still complete its
-        // trampoline back into game code (the trampoline lives IN the shell page).
-        uint64_t doomedPage = g_ShellPage;
-
         g_syncComplete = false;
         FlushSyncBuffer();
         { std::lock_guard<std::mutex> l(g_frameMtx); g_capturedFrames.clear(); }
         s_wasManual = false;
         s_lastRoundState = -2;
 
-        if (doomedPage) {
-            CreateThread(NULL, 0, [](LPVOID p) -> DWORD {
-                // Step 3: wait long enough for any game thread still executing
-                // the shell trampoline to complete. 400ms >> worst-case scheduler
-                // gap + frame time. Only THEN zero + unmap + null globals.
-                Sleep(400);
-                uint64_t page = (uint64_t)p;
-                uint8_t zeros[4096] = {};
-                DrvWriteRaw(zeros, page, 4096);
-                uint32_t old = 0;
-                DrvProtect(page, 4096, PAGE_READWRITE, &old);
-                driver->FreeMemory(page, 0, MEM_RELEASE);
-                g_ShellPage = 0;
-                g_RingAddr  = 0;
-                g_ReadIdx   = 0;
-                printf("[MATCH] Shell page freed (delayed, 0x%llX)\n", (unsigned long long)page);
-                return 0;
-            }, (LPVOID)doomedPage, 0, NULL);
-        }
+        // Keep the private shell page allocated while the process is alive.
+        // Reusing it avoids a race where a quick OFF→ON toggle re-attaches a
+        // hook just before the old delayed-free worker unmaps its trampoline.
+        // ShutdownRenderPipeline releases the page after the final detach.
     }
 
     // While OFF, do NOT touch game memory at all. Early-return before any
@@ -1250,6 +1239,18 @@ static void PollSyncBuffer(int W, int H, int maxD) {
                 g_frameSyncAddr = g_frameSyncCandidates.front();
             }
         }
+    }
+
+    const uint64_t pendingProjection =
+        g_pendingProjectionAddr.exchange(0, std::memory_order_acq_rel);
+    if (pendingProjection && IsProjectionMatrixUsable(
+            read<Matrix4x4>(pendingProjection + 0x250)))
+        g_projectionAddr = pendingProjection;
+
+    static DWORD s_lastViewDataRefresh = 0;
+    if (!s_lastViewDataRefresh || now_tick - s_lastViewDataRefresh >= 500) {
+        s_lastViewDataRefresh = now_tick;
+        RefreshProjectionFromViewData();
     }
 
     std::vector<uint64_t> cap;
@@ -1414,10 +1415,6 @@ static void PollSyncBuffer(int W, int H, int maxD) {
             if (e.isPlayer) g_activeVtx++;
         }
     }
-
-    uint64_t pendingProjection = g_pendingProjectionAddr.exchange(0, std::memory_order_acq_rel);
-    if (pendingProjection)
-        g_projectionAddr = pendingProjection;
 
     static DWORD s_lastW2SRescan = 0;
     const bool hasProjection =

@@ -284,8 +284,8 @@ static bool LookupFuncBounds(uint64_t moduleBase, uint32_t rva, uint32_t& outBeg
 }
 
 // Resolve the configured Actor_caller signature to the start of its owning
-// function. The older entity scan below searches for a separate hard-coded
-// anchor, so it can select an unrelated nearby call when that layout drifts.
+// function. This is only a last-resort candidate: unlike ActorPatchRva and the
+// call-site scan, a function entry does not guarantee that RCX is an actor.
 static uint64_t FindConfiguredActorFunction(uint64_t moduleBase) {
     if (!g_textCache.valid) return 0;
 
@@ -307,7 +307,7 @@ static uint64_t FindConfiguredActorFunction(uint64_t moduleBase) {
     }
 
     const uint64_t functionVA = moduleBase + begin;
-    printf("[ENTITY-SCAN] Actor_caller matched at RVA 0x%llX -> function RVA 0x%X\n",
+    printf("[ENTITY-SCAN] Actor_caller matched at RVA 0x%llX -> fallback function RVA 0x%X\n",
         (unsigned long long)(matchVA - moduleBase), begin);
     return functionVA;
 }
