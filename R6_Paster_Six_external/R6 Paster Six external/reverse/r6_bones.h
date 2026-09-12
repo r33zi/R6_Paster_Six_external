@@ -27,12 +27,16 @@ struct BoneCacheEntry {
 inline std::unordered_map<uint64_t, BoneCacheEntry> g_boneCache;
 inline std::mutex                                    g_boneCacheMtx;
 
-// Zero-delay skeleton — recompute every frame like box ESP.
-// Cache is kept ONLY so multiple render passes in the same frame don't
-// redundantly read; a 1ms TTL is effectively "same frame" at 60+ fps.
-// Failures are cached longer to avoid hammering the driver on dead comps.
-static constexpr uint64_t kBoneCacheOkTTL   = 1;
-static constexpr uint64_t kBoneCacheFailTTL = 100;
+// Bone discovery performs several pointer walks and bulk reads. Updating it
+// at 30 Hz keeps animation smooth while preventing high-refresh overlays from
+// issuing the same driver calls multiple times per displayed frame.
+static constexpr uint64_t kBoneCacheOkTTL   = 33;
+static constexpr uint64_t kBoneCacheFailTTL = 250;
+
+static void FlushBoneCache() {
+    std::lock_guard<std::mutex> lk(g_boneCacheMtx);
+    g_boneCache.clear();
+}
 
 // ═══ SHARED ROTATION ═══
 // Every rig-local skeleton path must be re-oriented into the actor's world
@@ -579,55 +583,31 @@ static bool ReadSkeleton_Impl(uint64_t entity, float wx, float wy, float wz, Ske
     memset(&s, 0, sizeof(s));
     if (!skel::ValidPtr(entity)) return false;
 
-    static uint64_t s_diagCount = 0;
-    static uint64_t s_lastDiag_ms = 0;
-    uint64_t now_ms = skel::NowMicros() / 1000;
-    bool logDiag = (s_diagCount < 50 || (now_ms - s_lastDiag_ms > 5000));
-    if (logDiag) {
-        s_diagCount++; s_lastDiag_ms = now_ms;
-        FILE* f = fopen("C:\\r6_bones_diag.log", "a");
-        if (f) {
-            fprintf(f, "[BONES-DBG] call#%llu entity=0x%llX draw=(%.1f,%.1f,%.1f) compArrOff=+0x%llX rotFn=%p physFn=%p\n",
-                (unsigned long long)s_diagCount, (unsigned long long)entity, wx, wy, wz,
-                (unsigned long long)skel::g_componentArrayOffset,
-                (void*)skel::g_readRotQuatFn, (void*)skel::g_readPhysPosFn);
-            fclose(f);
-        }
-    }
-
     // Path order: real-bone attempts, then guaranteed synthetic silhouette.
     bool r;
     r = ReadSkeleton_Direct(entity, wx, wy, wz, s);
-    if (logDiag) { FILE* f = fopen("C:\\r6_bones_diag.log", "a"); if (f) { fprintf(f, "[BONES-DBG] Direct=%d\n", (int)r); fclose(f); } }
     if (r) return true;
     memset(&s, 0, sizeof(s));
 
     r = ReadSkeleton_ByRegistry(entity, s);
-    if (logDiag) { FILE* f = fopen("C:\\r6_bones_diag.log", "a"); if (f) { fprintf(f, "[BONES-DBG] Registry=%d\n", (int)r); fclose(f); } }
     if (r) return true;
     memset(&s, 0, sizeof(s));
 
     r = ReadSkeleton_ByAutoDiscover(entity, wx, wy, wz, s);
-    if (logDiag) { FILE* f = fopen("C:\\r6_bones_diag.log", "a"); if (f) { fprintf(f, "[BONES-DBG] AutoDiscover=%d\n", (int)r); fclose(f); } }
     if (r) return true;
     memset(&s, 0, sizeof(s));
 
     r = ReadSkeleton_ByPosition(entity, wx, wy, wz, s);
-    if (logDiag) { FILE* f = fopen("C:\\r6_bones_diag.log", "a"); if (f) { fprintf(f, "[BONES-DBG] ByPosition=%d\n", (int)r); fclose(f); } }
     if (r) return true;
     memset(&s, 0, sizeof(s));
 
     r = ReadSkeleton_ByWorldMatrixPose(entity, wx, wy, wz, s);
-    if (logDiag) { FILE* f = fopen("C:\\r6_bones_diag.log", "a"); if (f) { fprintf(f, "[BONES-DBG] WMPose=%d\n", (int)r); fclose(f); } }
     if (r) return true;
     memset(&s, 0, sizeof(s));
 
     r = ReadSkeleton_ByFeetAnchor(entity, wx, wy, wz, s);
-    if (logDiag) { FILE* f = fopen("C:\\r6_bones_diag.log", "a"); if (f) { fprintf(f, "[BONES-DBG] FeetAnchor=%d\n", (int)r); fclose(f); } }
     if (r) return true;
     memset(&s, 0, sizeof(s));
-
-    if (logDiag) { FILE* f = fopen("C:\\r6_bones_diag.log", "a"); if (f) { fprintf(f, "[BONES-DBG] ALL PATHS FAILED\n"); fclose(f); } }
     return false;
 }
 
@@ -641,7 +621,8 @@ static bool ReadSkeleton(uint64_t entity, float wx, float wy, float wz, Skeleton
         auto it = g_boneCache.find(entity);
         if (it != g_boneCache.end()) {
             const bool wasOk = it->second.bones.total > 0;
-            const uint64_t ttl = wasOk ? kBoneCacheOkTTL : kBoneCacheFailTTL;
+            const uint64_t failScale = 1 + std::min<uint64_t>(3, it->second.consecutive_fails);
+            const uint64_t ttl = wasOk ? kBoneCacheOkTTL : kBoneCacheFailTTL * failScale;
             if (now_ms - it->second.last_update_ms < ttl) {
                 s = it->second.bones;
                 return wasOk;

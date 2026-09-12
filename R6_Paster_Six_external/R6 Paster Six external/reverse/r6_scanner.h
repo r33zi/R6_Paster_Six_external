@@ -490,8 +490,9 @@ static BoneSigInfo g_BoneSig = {};
 
 // ScanBoneSigs — finds the skeleton bone-entry layout signatures.
 //
-// The four signature variants identify the code that writes a bone position
-// component into the skeleton array. Each variant encodes:
+// The signature variants cover X/Y/Z stores in both observed instruction
+// layouts. Each variant identifies code that writes a bone position component
+// into the skeleton array and encodes:
 //   - A mov [reg+<componentOff>], reg instruction
 //   - A mov dword [reg+0x3C], 1.0f instruction (writes the w=1.0f component)
 //
@@ -504,17 +505,20 @@ static BoneSigInfo g_BoneSig = {};
 // the sigs tell us the layout directly.
 static bool ScanBoneSigs(uint64_t moduleBase) {
     if (!g_textCache.valid) return false;
+    g_BoneSig = {};
     const uint8_t* t = g_textCache.data.data();
     size_t sz = (size_t)g_textCache.textSize;
     uint64_t tb = g_textCache.textBase;
     printf("[BONE-SIG] Scanning %zu bytes for skeleton bone-entry sigs...\n", sz);
 
-    struct SigPat { const char* pattern; const char* name; };
+    struct SigPat { const char* pattern; const char* name; uint32_t componentOff; };
     static const SigPat pats[] = {
-        { OFFSETS::BoneZStoreSignature,        "Z-store" },
-        { OFFSETS::BoneZStoreSignatureCompact, "Z-store compact" },
-        { OFFSETS::BoneXStoreSignature,        "X-store" },
-        { OFFSETS::BoneXStoreSignatureCompact, "X-store compact" },
+        { OFFSETS::BoneZStoreSignature,        "Z-store",         0x38 },
+        { OFFSETS::BoneZStoreSignatureCompact, "Z-store compact", 0x38 },
+        { OFFSETS::BoneYStoreSignature,        "Y-store",         0x34 },
+        { OFFSETS::BoneYStoreSignatureCompact, "Y-store compact", 0x34 },
+        { OFFSETS::BoneXStoreSignature,        "X-store",         0x30 },
+        { OFFSETS::BoneXStoreSignatureCompact, "X-store compact", 0x30 },
     };
 
     std::vector<int> parsed[sizeof(pats) / sizeof(pats[0])];
@@ -535,8 +539,8 @@ static bool ScanBoneSigs(uint64_t moduleBase) {
 
         const SigPat& hit = pats[pi];
         uint64_t hitVA = tb + i;
-        printf("[BONE-SIG] %s match at RVA 0x%llX (transOff=0x30, wOff=0x3C)\n",
-            hit.name, (unsigned long long)(hitVA - moduleBase));
+        printf("[BONE-SIG] %s match at RVA 0x%llX (component=0x%X, transOff=0x30, wOff=0x3C)\n",
+            hit.name, (unsigned long long)(hitVA - moduleBase), hit.componentOff);
 
         // The sig directly tells us the bone-entry translation offset.
         // The 1.0f store at +0x3C confirms a 0x40-stride entry with position

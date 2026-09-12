@@ -691,6 +691,7 @@ static void ResetTrailBuffers();
 static void FlushSyncBuffer() {
     std::lock_guard<std::mutex> lock(g_syncMapMtx);
     g_syncMap.clear();
+    FlushBoneCache();
     r6hp::FlushHealthCache();
     ResetTrailBuffers();
     FlushShaderCache();
@@ -1182,8 +1183,6 @@ static void PollSyncBuffer(int W, int H, int maxD) {
 
         static size_t s_rrIndex = 0;
         constexpr int k_maxReadsPerTick = 4;
-        int readsThisTick = 0;
-
         std::vector<uint64_t> syncKeys;
         for (auto it = g_syncMap.begin(); it != g_syncMap.end(); ) {
             auto age = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second.last_seen);
@@ -1257,7 +1256,7 @@ static void PollSyncBuffer(int W, int H, int maxD) {
             e.operatorName[0] = '\0';
             e.headOnScreen = false;
 
-            if (Esp_skeleton) {
+            if ((Esp_skeleton || skeletonAim) && e.isPlayer && on) {
                 ReadSkeleton(ea, draw_pos.x, draw_pos.y, draw_pos.z, e.bones);
                 if (e.bones.total > 0) {
                     e.hasBones = true;
@@ -1268,10 +1267,13 @@ static void PollSyncBuffer(int W, int H, int maxD) {
             }
 
 
-            const char* opName = ResolveShaderLabel(ea);
-            if (opName) {
-                strncpy(e.operatorName, opName, sizeof(e.operatorName) - 1);
-                e.operatorName[sizeof(e.operatorName) - 1] = '\0';
+            extern bool shaderLabelOverlay;
+            if (shaderLabelOverlay && e.isPlayer) {
+                const char* opName = ResolveShaderLabel(ea);
+                if (opName) {
+                    strncpy(e.operatorName, opName, sizeof(e.operatorName) - 1);
+                    e.operatorName[sizeof(e.operatorName) - 1] = '\0';
+                }
             }
 
             // Live HP from the DamageComponent (entity -> DamageComp -> 0x183
