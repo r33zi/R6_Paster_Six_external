@@ -1121,10 +1121,29 @@ static void PollSyncBuffer(int W, int H, int maxD) {
         printf("[HOOK] Delay %dms before patching\n", s_hookDelayMs);
     }
 
-    bool delayPassed = (s_hookDelayStart > 0 && (now_tick - s_hookDelayStart) >= s_hookDelayMs);
-    if (!g_frameSyncActive && !g_syncComplete && isGameplay && delayPassed) {
-        AttachFrameSync();
-        s_hookDelayStart = 0;
+    // Every collection cycle needs its own delayed attach. Previously only
+    // the initial cycle set s_hookDelayStart; after the first 200 ms capture,
+    // g_syncComplete was eventually cleared but delayPassed could never become
+    // true again. A failed first attach also cleared the timer permanently.
+    if (!g_frameSyncActive && !g_syncComplete && isGameplay) {
+        if (s_hookDelayStart == 0) {
+            s_hookDelayStart = now_tick;
+            s_hookDelayMs = 500 + (rand() % 1500);
+            printf("[HOOK] Scheduled collection retry in %dms\n", s_hookDelayMs);
+        }
+
+        if ((now_tick - s_hookDelayStart) >= s_hookDelayMs) {
+            if (AttachFrameSync()) {
+                s_hookDelayStart = 0;
+            } else {
+                // Keep retrying while ESP is engaged. Transient allocation,
+                // protection, or driver-write failures must not leave the
+                // entity cache permanently empty.
+                s_hookDelayStart = now_tick;
+                s_hookDelayMs = 1000;
+                printf("[HOOK] Attach failed; retrying in %dms\n", s_hookDelayMs);
+            }
+        }
     }
     if (g_frameSyncActive) { PollFrameRing(); if (GetTickCount() - g_frameSyncStart > COLLECT_MS) { DetachFrameSync(); g_syncComplete = true; } }
 
