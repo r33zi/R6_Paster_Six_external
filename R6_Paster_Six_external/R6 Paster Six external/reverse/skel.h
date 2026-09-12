@@ -58,10 +58,9 @@ namespace skel
     };
 
     // Bone-entry layout. Stride is 0x40 (64 bytes per entry — confirmed by the
-    // 1.0f store at +0x3C in the bone sigs). Translation offset defaults to
-    // 0x30 but may be 0x38 on some builds; ScanBoneSigs in r6_scanner.h
-    // discovers the actual offset from the code signatures and overrides
-    // kBoneTranslate at startup.
+    // 1.0f store at +0x3C in the bone sigs). The translation vec3 begins at
+    // +0x30; a matched store at +0x38 writes its Z component, not another
+    // vec3. ScanBoneSigs confirms this layout at startup.
     inline uint64_t kBoneStride    = 0x40;
     inline uint64_t kBoneTranslate = 0x30;
     // Widened from 0x8000 → 0x40000 (32KB → 256KB). Newer R6 arenas are larger

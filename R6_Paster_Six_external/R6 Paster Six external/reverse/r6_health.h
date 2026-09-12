@@ -30,10 +30,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <array>
 #include <unordered_map>
 #include <mutex>
 
 #include "driver.h"
+#include "offsets.h"
 
 struct vec3 { float x, y, z; };
 
@@ -60,143 +62,159 @@ static inline void r6printf(const char* fmt, ...) {
 namespace r6hp {
 
 inline std::mutex s_healthEntityMapMtx;
-inline std::unordered_map<uint64_t, uint64_t> s_healthEntityMap;
-inline uint64_t s_healthCompOffsetCache = 0;
-inline int      s_typeTag183Off          = -1;
-inline int64_t  s_healthDataOffset      = 0;
+struct HealthCacheEntry {
+    uint64_t component = 0;
+    uint64_t healthObject = 0;
+};
 
-// Validate a DamageComponent-shaped pointer: the first 5 qwords should each be
-// a valid pointer (component vtable + base fields).
-static inline bool ValidateHealthComponent(uint64_t ptr) {
-    if (!IsVPtr(ptr)) return false;
-    for (int i = 0; i < 5; i++) {
-        uint64_t val = 0;
-        if (!SR(ptr + (uint64_t)i * 8, &val, sizeof(val))) return false;
-        if (!IsVPtr(val)) return false;
-    }
-    return true;
+inline std::unordered_map<uint64_t, HealthCacheEntry> s_healthEntityMap;
+inline std::unordered_map<uint64_t, uint64_t> s_healthRetryAfter;
+inline uint64_t s_componentArrayOffsetCache = 0;
+inline int      s_healthObjectFieldOffset   = -1;
+inline int64_t  s_healthDataOffset          = -1;
+
+static inline bool HasHealthTag(uint64_t object) {
+    if (!IsVPtr(object)) return false;
+    uint16_t tag = 0;
+    return SR(object - sizeof(uint64_t), &tag, sizeof(tag)) &&
+        tag == OFFSETS::HealthObjectTag;
 }
 
-static inline uint64_t FindHealthComponentSEH_Cached(uint64_t cached) {
-    if (IsVPtr(cached)) {
-        uint64_t v = 0;
-        if (SR(cached, &v, sizeof(v)) && IsVPtr(v))
-            return cached;
+// Match the DamageComponent by its current structural signature: a normal
+// component vtable plus a field pointing to the object tagged 0x183. Reading
+// the component in one block avoids hundreds of driver round trips.
+static inline uint64_t FindHealthObject(uint64_t component) {
+    if (!IsVPtr(component)) return 0;
+    uint64_t vtable = 0;
+    if (!SR(component, &vtable, sizeof(vtable)) || !IsVPtr(vtable)) return 0;
+
+    if (s_healthObjectFieldOffset >= 0) {
+        uint64_t object = 0;
+        if (SR(component + (uint64_t)s_healthObjectFieldOffset, &object, sizeof(object)) &&
+            HasHealthTag(object))
+            return object;
+        // A miss usually means this is another component in the same array,
+        // not that the shared DamageComponent field offset became stale.
+    }
+
+    static constexpr size_t kFieldCount = OFFSETS::DamageComponentSize / sizeof(uint64_t);
+    std::array<uint64_t, kFieldCount> fields{};
+    if (!SR(component, fields.data(), sizeof(fields))) return 0;
+
+    // Skip the Object/ManagedObject base and stay within the recovered class.
+    for (size_t i = 0x28 / sizeof(uint64_t); i < fields.size(); ++i) {
+        if (!HasHealthTag(fields[i])) continue;
+        s_healthObjectFieldOffset = (int)(i * sizeof(uint64_t));
+        return fields[i];
     }
     return 0;
 }
 
-static inline uint64_t FindHealthComponentSEH_Scan(uint64_t entity, uint64_t& outOff) {
-    if (s_healthCompOffsetCache) {
-        uint64_t comp = 0;
-        if (SR(entity + s_healthCompOffsetCache, &comp, sizeof(comp)) &&
-            IsVPtr(comp) && ValidateHealthComponent(comp))
-        {
-            outOff = s_healthCompOffsetCache;
-            return comp;
-        }
+static inline HealthCacheEntry FindInComponentArray(uint64_t entity, uint64_t arrayOffset) {
+    if (!arrayOffset) return {};
+    uint64_t list = 0;
+    if (!SR(entity + arrayOffset, &list, sizeof(list)) || !IsVPtr(list)) return {};
+
+    static constexpr size_t kMaxComponents = 100;
+    std::array<uint64_t, kMaxComponents> components{};
+    if (!SR(list, components.data(), sizeof(components))) {
+        // Some arrays end on an unreadable page. Preserve the bounded scan in
+        // that case instead of rejecting an otherwise valid component list.
+        for (size_t i = 0; i < components.size(); ++i)
+            SR(list + i * sizeof(uint64_t), &components[i], sizeof(uint64_t));
     }
-    // DamageComponent sits in the entity's component array. The array pointer
-    // has historically been at 0xA0..0xFC; widen the sweep to 0xA0..0x200 so we
-    // survive layout drift between builds.
-    for (uint64_t off = 0xA0; off <= 0x200; off += 8) {
-        uint64_t comp = 0;
-        if (!SR(entity + off, &comp, sizeof(comp))) continue;
-        if (!IsVPtr(comp)) continue;
-        if (ValidateHealthComponent(comp)) {
-            outOff = off;
-            return comp;
-        }
+
+    for (uint64_t component : components) {
+        uint64_t healthObject = FindHealthObject(component);
+        if (healthObject) return { component, healthObject };
     }
-    return 0;
+    return {};
 }
 
-// Locate the DamageComponent for an entity. Cached per-entity; falls back to a
-// component-array scan on miss. Returns 0 on failure.
-static inline uint64_t FindHealthComponent(uint64_t entity) {
-    if (!IsVPtr(entity)) return 0;
+// Locate the DamageComponent through the entity's component array. The old
+// reader treated entity+offset itself as a component, producing false matches.
+static inline HealthCacheEntry FindHealthComponent(uint64_t entity, uint64_t preferredArrayOffset) {
+    if (!IsVPtr(entity)) return {};
+    const uint64_t now = GetTickCount64();
     {
         std::lock_guard<std::mutex> lk(s_healthEntityMapMtx);
         auto it = s_healthEntityMap.find(entity);
         if (it != s_healthEntityMap.end()) {
-            uint64_t valid = FindHealthComponentSEH_Cached(it->second);
-            if (valid) return valid;
+            if (HasHealthTag(it->second.healthObject)) return it->second;
             s_healthEntityMap.erase(it);
         }
+        auto retry = s_healthRetryAfter.find(entity);
+        if (retry != s_healthRetryAfter.end() && now < retry->second) return {};
     }
-    uint64_t foundOff = 0;
-    uint64_t comp = FindHealthComponentSEH_Scan(entity, foundOff);
-    if (comp) {
-        s_healthCompOffsetCache = foundOff;
+
+    const uint64_t candidates[] = {
+        preferredArrayOffset, s_componentArrayOffsetCache,
+        0x370, 0xD8, 0xC0, 0xB8, 0xA0
+    };
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+        const uint64_t off = candidates[i];
+        if (!off) continue;
+        bool duplicate = false;
+        for (size_t j = 0; j < i; ++j)
+            if (candidates[j] == off) { duplicate = true; break; }
+        if (duplicate) continue;
+
+        HealthCacheEntry found = FindInComponentArray(entity, off);
+        if (!found.component) continue;
+        s_componentArrayOffsetCache = off;
         std::lock_guard<std::mutex> lk(s_healthEntityMapMtx);
-        s_healthEntityMap[entity] = comp;
+        s_healthRetryAfter.erase(entity);
+        s_healthEntityMap[entity] = found;
+        return found;
     }
-    return comp;
+    {
+        std::lock_guard<std::mutex> lk(s_healthEntityMapMtx);
+        s_healthRetryAfter[entity] = now + 1000;
+    }
+    return {};
+}
+
+static inline void FlushHealthCache() {
+    std::lock_guard<std::mutex> lk(s_healthEntityMapMtx);
+    s_healthEntityMap.clear();
+    s_healthRetryAfter.clear();
+    s_healthDataOffset = -1;
 }
 
 // Read the live HP integer for an entity. Returns -1 when not found / invalid.
-static inline int ReadEntityHealth(uint64_t entity) {
-    uint64_t healthComp = FindHealthComponent(entity);
-    if (!healthComp) return -1;
-
-    // Step 1: find the health object — an entry inside the DamageComponent
-    // whose 16-bit tag (at entry - 8) equals 0x183.
-    uint64_t healthObj = 0;
-    if (s_typeTag183Off >= 0) {
-        uint64_t entry = 0;
-        if (SR(healthComp + (uint64_t)s_typeTag183Off * 8, &entry, sizeof(entry)) &&
-            IsVPtr(entry))
-        {
-            uint16_t typeTag = 0;
-            if (SR(entry - 8, &typeTag, sizeof(typeTag)) && typeTag == 0x183)
-                healthObj = entry;
-        }
-        if (!healthObj) s_typeTag183Off = -1;
-    }
-    if (!healthObj) {
-        // Scan up to 0x190 qwords looking for an entry tagged 0x183.
-        for (int i = 0; i < 0x190; i++) {
-            uint64_t entry = 0;
-            if (!SR(healthComp + (uint64_t)i * 8, &entry, sizeof(entry))) continue;
-            if (!IsVPtr(entry)) continue;
-            uint16_t typeTag = 0;
-            if (!SR(entry - 8, &typeTag, sizeof(typeTag))) continue;
-            if (typeTag == 0x183) {
-                healthObj = entry;
-                s_typeTag183Off = i;
-                break;
-            }
-        }
-    }
-    if (!healthObj) return -1;
+static inline int ReadEntityHealth(uint64_t entity, uint64_t componentArrayOffset = 0) {
+    HealthCacheEntry health = FindHealthComponent(entity, componentArrayOffset);
+    if (!health.healthObject) return -1;
 
     // Step 2: healthObj + 0xE0 -> mid; mid + 0x38 -> hpData.
     uint64_t mid = 0;
-    if (!SR(healthObj + 0xE0, &mid, sizeof(mid)) || !IsVPtr(mid)) return -1;
+    if (!SR(health.healthObject + OFFSETS::HealthObjectMidOffset, &mid, sizeof(mid)) || !IsVPtr(mid)) return -1;
     uint64_t hpData = 0;
-    if (!SR(mid + 0x38, &hpData, sizeof(hpData)) || !IsVPtr(hpData)) return -1;
+    if (!SR(mid + OFFSETS::HealthDataOffset, &hpData, sizeof(hpData)) || !IsVPtr(hpData)) return -1;
 
     // Step 3: the integer HP sits at some int32 slot inside hpData. Try the
-    // cached offset first; if it's out of range, brute-force 0xC8 int32 slots
+    // cached offset first; if it's out of range, scan 0xC8 int32 slots
     // and pick the largest value in [1..150] (R6 player HP range).
-    if (s_healthDataOffset) {
+    if (s_healthDataOffset >= 0) {
         int32_t val = 0;
         if (SR(hpData + (uint64_t)s_healthDataOffset, &val, sizeof(val)) &&
             val >= 1 && val <= 150)
             return val;
-        s_healthDataOffset = 0;
+        s_healthDataOffset = -1;
     }
 
     int bestHp = -1;
     int64_t bestOff = 0;
-    for (uint64_t j = 0; j < 0xC8; j++) {
-        int32_t val = 0;
-        if (!SR(hpData + j * 4, &val, sizeof(val))) continue;
+    static constexpr size_t kHealthSlots = OFFSETS::HealthDataScanBytes / sizeof(int32_t);
+    std::array<int32_t, kHealthSlots> values{};
+    if (!SR(hpData, values.data(), sizeof(values))) return -1;
+    for (size_t j = 0; j < values.size(); j++) {
+        int32_t val = values[j];
         if (val >= 1 && val <= 150) {
             if (val > bestHp) { bestHp = val; bestOff = (int64_t)(j * 4); }
         }
     }
-    if (bestHp > 0 && bestOff) s_healthDataOffset = bestOff;
+    if (bestHp > 0) s_healthDataOffset = bestOff;
     return bestHp;
 }
 

@@ -253,13 +253,10 @@ static constexpr size_t RING_SZ = 256;
 static uint64_t g_RoundPtr = 0;
 static bool g_RoundFound = false;
 
-static DWORD g_lastEntityUpdate = 0;
-static constexpr DWORD ENTITY_UPDATE_INTERVAL = 16;
-
-
 static std::unordered_map<uint64_t, RenderSyncEntry> g_syncMap;
 static std::mutex g_syncMapMtx;
 static constexpr auto k_syncMaxAge = std::chrono::seconds(30);
+static constexpr auto k_positionMaxAge = std::chrono::milliseconds(750);
 static constexpr float k_viewportHeight = 1.72f;
 static constexpr float k_minRenderDist = 0.1f;
 
@@ -325,13 +322,19 @@ static void StartProjectionRescan() {
 }
 
 static bool W2S(const Vec3& w, Vec3& s, int W, int H) {
-    if (!g_projectionAddr) return false;
+    if (!g_projectionAddr || W <= 0 || H <= 0 ||
+        !std::isfinite(w.x) || !std::isfinite(w.y) || !std::isfinite(w.z))
+        return false;
     Matrix4x4 v=QueryProjectionMatrix();
+    for (float component : v.m)
+        if (!std::isfinite(component)) return false;
     float ww=v.m[3]*w.x+v.m[7]*w.y+v.m[11]*w.z+v.m[15];
-    if (ww<0.001f) return false;
+    if (!std::isfinite(ww) || ww<0.001f) return false;
     s.x=(W*.5f)*(w.x*v.m[0]+w.y*v.m[4]+w.z*v.m[8]+v.m[12])/ww+W*.5f;
     s.y=-(H*.5f)*(w.x*v.m[1]+w.y*v.m[5]+w.z*v.m[9]+v.m[13])/ww+H*.5f;
-    s.z=ww; return s.x>=0&&s.y>=0&&s.x<=W&&s.y<=H;
+    s.z=ww;
+    return std::isfinite(s.x) && std::isfinite(s.y) &&
+        s.x>=0&&s.y>=0&&s.x<=W&&s.y<=H;
 }
 
 #include "weather_fx.h"
@@ -412,21 +415,17 @@ static bool TryEncryptedActorPos(uint64_t actor, Vec3& out) {
     bool trace = (g_encTraceBudget.load() > 0);
     if (trace) g_encTraceBudget--;
 
+    bool encrypted = false;
     for (uint64_t flagOff : k_flagOffs) {
         uint16_t flag = read<uint16_t>(actor + flagOff);
         if (trace) printf("[ENC] actor=0x%llX flag@0x%llX=0x%04X\n",
                           (unsigned long long)actor, (unsigned long long)flagOff, flag);
+        encrypted = encrypted || flag == 0;
+    }
 
-        if (flag != 0) {
-            for (uint64_t po : k_plainOffs) {
-                Vec3 p = read<Vec3>(actor + po);
-                if (trace) printf("[ENC]   plain@0x%llX=(%.1f,%.1f,%.1f) valid=%d\n",
-                                  (unsigned long long)po, p.x, p.y, p.z, (int)ValidateWorldCoord(p));
-                if (ValidateWorldCoord(p)) { out = p; return true; }
-            }
-            continue;
-        }
-
+    // The two flag/root offsets drift independently. Check both flags before
+    // allowing a valid-but-frozen plain vector to hide the live chain.
+    if (encrypted) {
         for (uint64_t rootOff : k_rootOffs) {
             uint64_t outer_ptr = read<uint64_t>(actor + rootOff);
             if (trace) printf("[ENC]   root@0x%llX outer_ptr=0x%llX valid=%d\n",
@@ -470,6 +469,14 @@ static bool TryEncryptedActorPos(uint64_t actor, Vec3& out) {
             }
         }
     }
+
+    for (uint64_t po : k_plainOffs) {
+        Vec3 p = read<Vec3>(actor + po);
+        if (trace) printf("[ENC]   plain@0x%llX=(%.1f,%.1f,%.1f) valid=%d\n",
+                          (unsigned long long)po, p.x, p.y, p.z, (int)ValidateWorldCoord(p));
+        if (ValidateWorldCoord(p)) { out = p; return true; }
+    }
+
     if (trace) printf("[ENC] returned false for actor 0x%llX\n", (unsigned long long)actor);
     return false;
 }
@@ -678,9 +685,13 @@ static Vec3 InterpolateFrameCoord(RenderSyncEntry& entry, float frame_dt) {
     return entry.position;
 }
 
+static void ResetTrailBuffers();
+
 static void FlushSyncBuffer() {
     std::lock_guard<std::mutex> lock(g_syncMapMtx);
     g_syncMap.clear();
+    r6hp::FlushHealthCache();
+    ResetTrailBuffers();
     FlushShaderCache();
     FlushShaderSigCache();
 }
@@ -873,13 +884,33 @@ static TrailBuffer* AllocTrailBuffer(uint64_t entityId) {
     t->entityId = entityId;
     t->count = 0;
     t->writeIdx = 0;
+    t->lastUpdate = 0;
     return t;
 }
 
+static void ResetTrailBuffers() {
+    memset(g_trailBuffers, 0, sizeof(g_trailBuffers));
+    g_trailBufCount = 0;
+}
+
 static void AppendTrailSample(TrailBuffer* t, Vec3 pos) {
+    if (!t || !ValidateWorldCoord(pos)) return;
     extern int trailUpdateMs;
     DWORD now = GetTickCount();
     if (now - t->lastUpdate < (DWORD)trailUpdateMs) return;
+
+    if (t->count > 0) {
+        int previous = (t->writeIdx - 1 + TRAIL_MAX_POINTS) % TRAIL_MAX_POINTS;
+        Vec3 delta = { pos.x - t->points[previous].x,
+                       pos.y - t->points[previous].y,
+                       pos.z - t->points[previous].z };
+        // A respawn/round transition must start a new trace instead of drawing
+        // a map-spanning segment from the previous location.
+        if (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z > 400.0f) {
+            t->count = 0;
+            t->writeIdx = 0;
+        }
+    }
     t->lastUpdate = now;
     t->points[t->writeIdx] = pos;
     t->writeIdx = (t->writeIdx + 1) % TRAIL_MAX_POINTS;
@@ -940,8 +971,8 @@ static bool InitRenderPipeline(uint64_t base, uint64_t size) {
 
     ScanBoneSigs(base);
 
-    // Apply the bone-entry translation offset discovered by the sig scanner.
-    // The sigs tell us whether position lives at +0x30 or +0x38 within each
+    // Apply the bone-entry translation offset confirmed by the sig scanner.
+    // Both current store variants resolve the vec3 base at +0x30 within each
     // 0x40-stride bone entry. Override the default kBoneTranslate.
     if (g_BoneSig.valid) {
         skel::kBoneTranslate = g_BoneSig.boneTransOff;
@@ -988,8 +1019,6 @@ static void ShutdownRenderPipeline() {
 
 static void PollSyncBuffer(int W, int H, int maxD) {
     DWORD now_tick = GetTickCount();
-    if (now_tick - g_lastEntityUpdate < ENTITY_UPDATE_INTERVAL) return;
-    g_lastEntityUpdate = now_tick;
 
     std::lock_guard<std::mutex> lk(g_Mtx);
     g_vertexBuffer.clear(); g_vtxCount = 0; g_activeVtx = 0;
@@ -1191,6 +1220,9 @@ static void PollSyncBuffer(int W, int H, int maxD) {
             Vec3 draw_pos = entry.position;
             if (!ValidateWorldCoord(draw_pos))
                 continue;
+            if (entry.position_time.time_since_epoch().count() == 0 ||
+                now - entry.position_time > k_positionMaxAge)
+                continue;
 
             float d = sqrtf(
                 (draw_pos.x - cam.x) * (draw_pos.x - cam.x) +
@@ -1234,9 +1266,12 @@ static void PollSyncBuffer(int W, int H, int maxD) {
             }
 
             // Live HP from the DamageComponent (entity -> DamageComp -> 0x183
-            // tag -> +0xE0 -> +0x38 -> int32 hp). Falls back to 100 on miss.
-            {
-                int hp = r6hp::ReadEntityHealth(ea);
+            // tag -> +0xE0 -> +0x38 -> int32 hp). Only resolve it when an
+            // enabled overlay consumes HP; otherwise avoid needless reads.
+            extern bool depthVisualization;
+            extern bool lowHpPriority;
+            if (e.isPlayer && (depthVisualization || lowHpPriority)) {
+                int hp = r6hp::ReadEntityHealth(ea, s_shaderArrayOff);
                 if (hp > 0) e.hp = hp;
             }
 
@@ -1282,7 +1317,13 @@ static void PollSyncBuffer(int W, int H, int maxD) {
 static void FlushOverlayPipeline(bool box, bool corner, bool line, bool dist, int visDist,
                             bool trail, bool aimEnabled, float aimFov, float aimSmooth,
                             int hitboxSel, bool fovCircle, bool squareFov, bool xhair) {
-    int W = GetSystemMetrics(SM_CXSCREEN), H = GetSystemMetrics(SM_CYSCREEN);
+    int W = Width, H = Height;
+    if (W <= 0 || H <= 0) {
+        const ImVec2 display = ImGui::GetIO().DisplaySize;
+        W = (int)display.x;
+        H = (int)display.y;
+    }
+    if (W <= 0 || H <= 0) return;
     PollSyncBuffer(W, H, visDist);
     std::lock_guard<std::mutex> lk(g_Mtx);
     ImDrawList* dl = ImGui::GetOverlayDrawList();
