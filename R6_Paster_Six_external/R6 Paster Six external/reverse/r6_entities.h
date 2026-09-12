@@ -230,6 +230,9 @@ static uint64_t g_projectionAddr = 0;
 static std::atomic<bool> g_projectionScanActive{false};
 static std::atomic<uint64_t> g_pendingProjectionAddr{0};
 static uint64_t g_frameSyncAddr = 0;
+static std::vector<uint64_t> g_frameSyncCandidates;
+static size_t   g_frameSyncCandidateIndex = 0;
+static uint64_t g_captureStartPlayerCount = 0;
 static uint64_t g_imageBase = 0;
 static uint64_t g_ShellPage = 0;
 static uint64_t g_RingAddr = 0;
@@ -249,6 +252,7 @@ static int g_vtxCount = 0, g_activeVtx = 0;
 static std::unordered_set<uint64_t> g_capturedFrames;
 static std::mutex g_frameMtx;
 static std::atomic<uint64_t> g_totalFrames{0};
+static std::atomic<uint64_t> g_totalPlayerFrames{0};
 static uint64_t g_ReadIdx = 0;
 static constexpr size_t RING_SZ = 256;
 static uint64_t g_RoundPtr = 0;
@@ -303,6 +307,17 @@ static int FindBoundary(const uint8_t* c, int minB) {
 static Matrix4x4 QueryProjectionMatrix() { return g_projectionAddr ? read<Matrix4x4>(g_projectionAddr+0x250) : Matrix4x4{}; }
 static Vec3 QueryCameraOrigin() { return g_projectionAddr ? read<Vec3>(g_projectionAddr+0x190) : Vec3{}; }
 
+static bool IsProjectionMatrixUsable(const Matrix4x4& matrix) {
+    int nonZeroComponents = 0;
+    for (float component : matrix.m) {
+        if (!std::isfinite(component) || fabsf(component) > 1000000.0f)
+            return false;
+        if (fabsf(component) > 0.000001f)
+            ++nonZeroComponents;
+    }
+    return nonZeroComponents >= 4;
+}
+
 static DWORD WINAPI RescanProjectionThread(LPVOID) {
     uint64_t newProjection = ScanForViewTrans(g_imageBase, 0x18000000);
     if (newProjection)
@@ -327,8 +342,7 @@ static bool W2S(const Vec3& w, Vec3& s, int W, int H) {
         !std::isfinite(w.x) || !std::isfinite(w.y) || !std::isfinite(w.z))
         return false;
     Matrix4x4 v=QueryProjectionMatrix();
-    for (float component : v.m)
-        if (!std::isfinite(component)) return false;
+    if (!IsProjectionMatrixUsable(v)) return false;
     float ww=v.m[3]*w.x+v.m[7]*w.y+v.m[11]*w.z+v.m[15];
     if (!std::isfinite(ww) || ww<0.001f) return false;
     s.x=(W*.5f)*(w.x*v.m[0]+w.y*v.m[4]+w.z*v.m[8]+v.m[12])/ww+W*.5f;
@@ -343,6 +357,11 @@ static bool W2S(const Vec3& w, Vec3& s, int W, int H) {
 static bool ValidatePtr(uint64_t e){
     if(!IsValidAddr(e))return false;
     if(!IsValidAddr(read<uint64_t>(e)))return false;
+    // The numeric IDs at +0x1C/+0x20 drift between builds. A live player
+    // stencil is already the authoritative classifier used by the renderer,
+    // so do not discard that entity solely because its legacy ID moved.
+    uint64_t fb=read<uint64_t>(e+0xB8);
+    if(((fb>>52)&0xFFF)==0x2C8)return true;
     int id=read<int>(e+0x1C);
     if(id>0&&id<1000)return true;
     id=read<int>(e+0x20);
@@ -747,8 +766,24 @@ static void PollFrameRing() {
     while (g_ReadIdx < wi) {
         uint64_t idx=g_ReadIdx&(RING_SZ-1);
         uint64_t ep=read<uint64_t>(g_RingAddr+0x10+idx*8);
-        if (IsValidAddr(ep)&&ValidatePtr(ep)) { std::lock_guard<std::mutex> l(g_frameMtx); g_capturedFrames.insert(ep); g_totalFrames++; new_captures++; }
-        else rejected++;
+        if (IsValidAddr(ep)&&ValidatePtr(ep)) {
+            // A generic object can satisfy the legacy ID checks. Only count a
+            // capture as successful when it also exposes a usable world
+            // position; otherwise candidate selection can get stuck on a busy
+            // but unrelated function while the ESP vertex buffer stays empty.
+            uint16_t compIndex = 0xFFFF;
+            Vec3 position = QueryTransformCache(ep, compIndex);
+            if (ValidateWorldCoord(position)) {
+                std::lock_guard<std::mutex> l(g_frameMtx);
+                g_capturedFrames.insert(ep);
+                g_totalFrames++;
+                if (IsActiveStencil(ReadStencilBuffer(ep)))
+                    g_totalPlayerFrames++;
+                new_captures++;
+            } else {
+                rejected++;
+            }
+        } else rejected++;
         g_ReadIdx++;
     }
     static DWORD s_lastRingDbg = 0;
@@ -835,6 +870,10 @@ static bool AttachFrameSync() {
     hook[0]=0xFF; hook[1]=0x25; hook[2]=0; hook[3]=0; hook[4]=0; hook[5]=0;
     *(uint64_t*)&hook[6]=g_ShellPage;
     for(int i=14;i<g_PatchLen;i++) hook[i]=0x90;
+    // Establish the candidate baseline before the trampoline becomes live so
+    // an actor captured immediately after the write is not missed.
+    g_captureStartPlayerCount=
+        g_totalPlayerFrames.load(std::memory_order_acquire);
     if (!DrvWriteExec(hook, g_frameSyncAddr, g_PatchLen)) {
         printf("[HOOK-FAIL] DrvWriteExec hook stub to 0x%llX (%u bytes) failed\n",
                (unsigned long long)g_frameSyncAddr, g_PatchLen);
@@ -853,6 +892,18 @@ static bool DetachFrameSync() {
     g_frameSyncActive=false;
     printf("[HOOK] REMOVED - .text restored after %dms\n", GetTickCount()-g_frameSyncStart);
 return true;
+}
+
+static bool SelectNextFrameSyncCandidate() {
+    if (g_frameSyncCandidates.size() <= 1) return false;
+    if (g_frameSyncCandidateIndex + 1 >= g_frameSyncCandidates.size())
+        return false;
+    ++g_frameSyncCandidateIndex;
+    g_frameSyncAddr = g_frameSyncCandidates[g_frameSyncCandidateIndex];
+    printf("[ENTITY-SCAN] Trying capture candidate %zu/%zu at 0x%llX\n",
+        g_frameSyncCandidateIndex + 1, g_frameSyncCandidates.size(),
+        (unsigned long long)g_frameSyncAddr);
+    return true;
 }
 
 
@@ -953,17 +1004,41 @@ static bool InitRenderPipeline(uint64_t base, uint64_t size) {
                 (unsigned long long)g_pViewDataPtr, (unsigned long long)vd);
         }
     }
+    if (g_projectionAddr && !IsProjectionMatrixUsable(QueryProjectionMatrix())) {
+        printf("[R6] Signature ViewData has no usable projection matrix; scanning heap fallback\n");
+        g_projectionAddr = 0;
+    }
     if (!g_projectionAddr)
         g_projectionAddr = ScanForViewTrans(base, size);
-    if (!IsValidAddr(g_projectionAddr)) {
+    if (!IsValidAddr(g_projectionAddr) ||
+        !IsProjectionMatrixUsable(QueryProjectionMatrix())) {
         g_projectionAddr = 0;
         return false;
     }
 
     auto calls=FindEntityFunctionCalls(base);
-    for(auto& c:calls) if(c.hasTestAlAl){g_frameSyncAddr=c.targetVA;break;}
-    if(!g_frameSyncAddr&&!calls.empty()) g_frameSyncAddr=calls[0].targetVA;
+    g_frameSyncAddr = 0;
+    g_frameSyncCandidates.clear();
+    g_frameSyncCandidateIndex = 0;
+    const auto addFrameSyncCandidate = [](uint64_t address) {
+        if (!IsValidAddr(address)) return;
+        if (std::find(g_frameSyncCandidates.begin(), g_frameSyncCandidates.end(), address)
+            == g_frameSyncCandidates.end())
+            g_frameSyncCandidates.push_back(address);
+    };
+
+    // Prefer the signature supplied by the active offsets source, then retain
+    // the legacy nearby-call candidates as runtime fallbacks.
+    addFrameSyncCandidate(FindConfiguredActorFunction(base));
+    for (const auto& call : calls) addFrameSyncCandidate(call.targetVA);
+    if (OFFSETS::ActorPatchRva + 32 <= size)
+        addFrameSyncCandidate(base + OFFSETS::ActorPatchRva);
+
+    if (!g_frameSyncCandidates.empty())
+        g_frameSyncAddr = g_frameSyncCandidates.front();
     if(!g_frameSyncAddr) return false;
+    printf("[ENTITY-SCAN] %zu capture candidates; starting at 0x%llX\n",
+        g_frameSyncCandidates.size(), (unsigned long long)g_frameSyncAddr);
     FindRound();
     if (ScanSkelXref(base)) {
         printf("[R6] Skeleton xref: compIdx=+0x%X compArr=+0x%X func=0x%llX\n",
@@ -1145,7 +1220,24 @@ static void PollSyncBuffer(int W, int H, int maxD) {
             }
         }
     }
-    if (g_frameSyncActive) { PollFrameRing(); if (GetTickCount() - g_frameSyncStart > COLLECT_MS) { DetachFrameSync(); g_syncComplete = true; } }
+    if (g_frameSyncActive) {
+        PollFrameRing();
+        if (GetTickCount() - g_frameSyncStart > COLLECT_MS && DetachFrameSync()) {
+            const uint64_t capturedPlayers =
+                g_totalPlayerFrames.load(std::memory_order_acquire) -
+                g_captureStartPlayerCount;
+            if (capturedPlayers == 0 && SelectNextFrameSyncCandidate()) {
+                // Retry quickly with a different source instead of waiting the
+                // normal 8-15 second refresh period on a function that never
+                // supplies valid entities.
+                g_syncComplete = false;
+                s_hookDelayStart = now_tick;
+                s_hookDelayMs = 250;
+            } else {
+                g_syncComplete = true;
+            }
+        }
+    }
 
     static DWORD s_lastHookEnd = 0;
     if (g_syncComplete && !g_frameSyncActive && isGameplay) {
@@ -1153,6 +1245,10 @@ static void PollSyncBuffer(int W, int H, int maxD) {
         if (now_tick - s_lastHookEnd > (REHOOK_MIN_MS + (rand() % REHOOK_JITTER_MS))) {
             g_syncComplete = false;
             s_lastHookEnd = 0;
+            if (!g_frameSyncCandidates.empty()) {
+                g_frameSyncCandidateIndex = 0;
+                g_frameSyncAddr = g_frameSyncCandidates.front();
+            }
         }
     }
 
@@ -1324,7 +1420,9 @@ static void PollSyncBuffer(int W, int H, int maxD) {
         g_projectionAddr = pendingProjection;
 
     static DWORD s_lastW2SRescan = 0;
-    if (g_projectionAddr && !hasCameraOrigin && now_tick - s_lastW2SRescan > 5000) {
+    const bool hasProjection =
+        g_projectionAddr && IsProjectionMatrixUsable(QueryProjectionMatrix());
+    if ((!hasProjection || !hasCameraOrigin) && now_tick - s_lastW2SRescan > 5000) {
         s_lastW2SRescan = now_tick;
         StartProjectionRescan();
     }
