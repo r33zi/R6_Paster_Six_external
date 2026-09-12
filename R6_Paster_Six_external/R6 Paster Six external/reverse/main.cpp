@@ -8,6 +8,7 @@
 #include <vector>
 #include <random>
 #include <atomic>
+#include <cfloat>
 #include "Keybind.h"
 #include "color.hpp"
 #include "json.hpp"
@@ -762,6 +763,18 @@ void SubmitDrawCalls() {
 void render() {
     ImGui_ImplDX9_NewFrame();
     ImGui_ImplWin32_NewFrame();
+
+    // The overlay deliberately uses WS_EX_NOACTIVATE, so the Win32 backend
+    // clears MousePos because this window is never the active window. Poll
+    // input after the backend update so ImGui receives usable coordinates.
+    ImGuiIO& io = ImGui::GetIO();
+    POINT cursor = {};
+    if (ShowMenu && GetCursorPos(&cursor) && ScreenToClient(Window, &cursor))
+        io.MousePos = ImVec2(static_cast<float>(cursor.x), static_cast<float>(cursor.y));
+    else
+        io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
+    io.MouseDown[0] = ShowMenu && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+
     ImGui::NewFrame();
     UpdateRainbow();
 
@@ -1372,14 +1385,6 @@ void xMainLoop() {
             Sleep(16);
             continue;
         }
-        ImGuiIO& io = ImGui::GetIO();
-        io.ImeWindowHandle = hwnd;
-        io.DeltaTime = 1.0f / 60.0f;
-        POINT p; GetCursorPos(&p);
-        io.MousePos.x = p.x - target.left;
-        io.MousePos.y = p.y - target.top;
-        io.MouseDown[0] = ShowMenu && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-
         if (!EqualRect(&target, &oldTarget)) {
             oldTarget = target;
             Width = target.right - target.left;
