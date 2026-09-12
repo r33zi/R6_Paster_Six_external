@@ -170,6 +170,7 @@ struct OverlayVertex {
     ActorStatus status;
     bool isPlayer;
     float distance;
+    bool distanceValid;
     Vec3 screenPos;
     bool onScreen;
     bool hasBones;
@@ -953,6 +954,10 @@ static bool InitRenderPipeline(uint64_t base, uint64_t size) {
     }
     if (!g_projectionAddr)
         g_projectionAddr = ScanForViewTrans(base, size);
+    if (!IsValidAddr(g_projectionAddr)) {
+        g_projectionAddr = 0;
+        return false;
+    }
 
     auto calls=FindEntityFunctionCalls(base);
     for(auto& c:calls) if(c.hasTestAlAl){g_frameSyncAddr=c.targetVA;break;}
@@ -1140,6 +1145,7 @@ static void PollSyncBuffer(int W, int H, int maxD) {
     }
 
     Vec3 cam = QueryCameraOrigin();
+    const bool hasCameraOrigin = ValidateWorldCoord(cam);
     auto now = std::chrono::steady_clock::now();
     float frame_dt = 1.f / 60.f;
     {
@@ -1224,13 +1230,15 @@ static void PollSyncBuffer(int W, int H, int maxD) {
                 now - entry.position_time > k_positionMaxAge)
                 continue;
 
-            float d = sqrtf(
-                (draw_pos.x - cam.x) * (draw_pos.x - cam.x) +
-                (draw_pos.y - cam.y) * (draw_pos.y - cam.y) +
-                (draw_pos.z - cam.z) * (draw_pos.z - cam.z));
-
-            if (d < k_minRenderDist || d >(float)maxD)
-                continue;
+            float d = 0.0f;
+            if (hasCameraOrigin) {
+                d = sqrtf(
+                    (draw_pos.x - cam.x) * (draw_pos.x - cam.x) +
+                    (draw_pos.y - cam.y) * (draw_pos.y - cam.y) +
+                    (draw_pos.z - cam.z) * (draw_pos.z - cam.z));
+                if (d < k_minRenderDist || d > (float)maxD)
+                    continue;
+            }
 
             Vec3 sp = {};
             bool on = W2S(draw_pos, sp, W, H);
@@ -1241,6 +1249,7 @@ static void PollSyncBuffer(int W, int H, int maxD) {
             e.status = IsClearedStencil(entry.filter_byte) ? ActorStatus::DEAD_1 : ActorStatus::VALID;
             e.isPlayer = IsActiveStencil(entry.filter_byte);
             e.distance = d;
+            e.distanceValid = hasCameraOrigin;
             e.screenPos = sp;
             e.onScreen = on;
             e.hasBones = false;
@@ -1294,7 +1303,7 @@ static void PollSyncBuffer(int W, int H, int maxD) {
         g_projectionAddr = pendingProjection;
 
     static DWORD s_lastW2SRescan = 0;
-    if (g_projectionAddr && (cam.x == 0.f && cam.y == 0.f && cam.z == 0.f) && now_tick - s_lastW2SRescan > 5000) {
+    if (g_projectionAddr && !hasCameraOrigin && now_tick - s_lastW2SRescan > 5000) {
         s_lastW2SRescan = now_tick;
         StartProjectionRescan();
     }
@@ -1404,7 +1413,7 @@ static void FlushOverlayPipeline(bool box, bool corner, bool line, bool dist, in
 
         // Distance fade — scale alpha by distance falloff. Applied last so it
         // affects overrides too.
-        if (distanceFade && !isCorpse) {
+        if (distanceFade && e.distanceValid && !isCorpse) {
             float lo = distanceFadeNear, hi = distanceFadeFar;
             if (hi > lo) {
                 float t = (e.distance - lo) / (hi - lo);
@@ -1482,7 +1491,7 @@ static void FlushOverlayPipeline(bool box, bool corner, bool line, bool dist, in
                 boneLine(skel::kConnections[i].first, skel::kConnections[i].second);
         }
 
-        if (dist) {
+        if (dist && e.distanceValid) {
             char dt[32]; snprintf(dt, 32, "%.0fm", e.distance);
             dl->AddText({sx - 10 + 1, sy + 3 + 1}, IM_COL32(0, 0, 0, 200), dt);
             dl->AddText({sx - 10, sy + 3}, ColorToU32(espDistanceColor), dt);
