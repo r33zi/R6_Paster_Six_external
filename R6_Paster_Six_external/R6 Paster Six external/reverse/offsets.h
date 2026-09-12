@@ -45,6 +45,10 @@ namespace OFFSETS
         "? 89 ? ? 38 ? C7 ? ? 3C 00 00 80 3F";
     static constexpr const char* BoneZStoreSignatureCompact =
         "89 ? ? 38 C7 ? ? 3C 00 00 80 3F";
+    static constexpr const char* BoneYStoreSignature =
+        "? 89 ? ? 34 ? C7 ? ? 3C 00 00 80 3F";
+    static constexpr const char* BoneYStoreSignatureCompact =
+        "89 ? ? 34 C7 ? ? 3C 00 00 80 3F";
     static constexpr const char* BoneXStoreSignature =
         "? 89 ? ? 30 ? C7 ? ? 3C 00 00 80 3F";
     static constexpr const char* BoneXStoreSignatureCompact =
