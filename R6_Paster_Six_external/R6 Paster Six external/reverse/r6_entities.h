@@ -442,8 +442,8 @@ static void FlushShaderCache() {
 //         real  = masked XOR (0x0001_0001_0001 * key).
 // The repeated key unmasks all three 16-bit words in the pointer payload.
 // Root offset (0x30 or 0x20) and flag word (0x6E or 0x5E) drift between
-// builds — try both. Flag word == 0 means encrypted; else plain vec3 lives
-// at Actor + 0x50 or Actor + 0x60 (gadgets / non-player actors).
+// builds — try both. Plain actor vectors are deliberately handled by the
+// caller only after the live character-component position has been tried.
 //
 static inline uint64_t DecObfPtr(uint64_t p) {
     const uint64_t key = p >> 48;
@@ -456,7 +456,6 @@ static bool TryEncryptedActorPos(uint64_t actor, Vec3& out) {
 
     static const uint64_t k_flagOffs[]  = { 0x6E, 0x5E };
     static const uint64_t k_rootOffs[]  = { 0x30, 0x20 };
-    static const uint64_t k_plainOffs[] = { 0x50, 0x60 };
 
     bool trace = (g_encTraceBudget.load() > 0);
     if (trace) g_encTraceBudget--;
@@ -514,13 +513,6 @@ static bool TryEncryptedActorPos(uint64_t actor, Vec3& out) {
                 if (ValidateWorldCoord(q)) { out = q; return true; }
             }
         }
-    }
-
-    for (uint64_t po : k_plainOffs) {
-        Vec3 p = read<Vec3>(actor + po);
-        if (trace) printf("[ENC]   plain@0x%llX=(%.1f,%.1f,%.1f) valid=%d\n",
-                          (unsigned long long)po, p.x, p.y, p.z, (int)ValidateWorldCoord(p));
-        if (ValidateWorldCoord(p)) { out = p; return true; }
     }
 
     if (trace) printf("[ENC] returned false for actor 0x%llX\n", (unsigned long long)actor);
