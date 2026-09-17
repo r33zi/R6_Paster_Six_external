@@ -39,18 +39,21 @@ struct TextSectionCache {
 };
 static TextSectionCache g_textCache;
 
-// Scan the cached .text section for a pattern and resolve a RIP-relative
-// `mov reg, [rip+disp32]` load at the match site. Returns the absolute
-// address of the pointer variable (the one being loaded via RIP-relative).
+// Scan the cached .text section for a pattern and resolve a seven-byte
+// RIP-relative instruction at the requested offset. Returns the absolute
+// address referenced by its disp32 operand.
 static uint64_t ScanSigRipRelative(const char* pattern, int matchOffsetInPattern, uint64_t moduleBase) {
-    if (!g_textCache.valid) return 0;
+    if (!g_textCache.valid || matchOffsetInPattern < 0) return 0;
     const uint8_t* t = g_textCache.data.data();
     size_t sz = (size_t)g_textCache.textSize;
     uint64_t tb = g_textCache.textBase;
     std::vector<int> pat = ParsePattern(pattern);
     size_t off = ScanBufFirst(t, sz, pat);
     if (off == SIZE_MAX) return 0;
-    int32_t disp = *(int32_t*)(t + off + matchOffsetInPattern + 3);
+    const size_t instructionOffset = off + (size_t)matchOffsetInPattern;
+    if (instructionOffset > sz || sz - instructionOffset < 7) return 0;
+    int32_t disp = 0;
+    memcpy(&disp, t + instructionOffset + 3, sizeof(disp));
     uint64_t instrEnd = tb + off + matchOffsetInPattern + 7;
     uint64_t ptrAddr = instrEnd + disp;
     printf("[SIG] '%s' match at RVA 0x%llX -> ptr at 0x%llX\n",
@@ -63,6 +66,33 @@ static uint64_t ScanSigRipRelative(const char* pattern, int matchOffsetInPattern
 static uint64_t g_pGameManagerPtr = 0;
 static uint64_t g_pViewDataPtr = 0;
 static uint64_t g_pCameraManagerPtr = 0;
+static uint64_t g_inGameFlagAddress = 0;
+
+static bool ReadInGameFlag(bool& inGame) {
+    if (!g_inGameFlagAddress) return false;
+    static DWORD lastRead = 0;
+    static bool cachedValue = false;
+    static bool hasCachedValue = false;
+    const DWORD now = GetTickCount();
+    if (hasCachedValue && lastRead && now - lastRead < 100) {
+        inGame = cachedValue;
+        return true;
+    }
+    lastRead = now;
+    uint32_t value = 0;
+    if (driver->ReadProcessMemory(
+            g_inGameFlagAddress, &value, sizeof(value)) != 0 || value > 1) {
+        if (hasCachedValue) {
+            inGame = cachedValue;
+            return true;
+        }
+        return false;
+    }
+    cachedValue = value != 0;
+    hasCachedValue = true;
+    inGame = cachedValue;
+    return true;
+}
 
 static bool ScanGamePointers(uint64_t moduleBase) {
     if (!g_textCache.valid) return false;
@@ -93,10 +123,15 @@ static bool ScanGamePointers(uint64_t moduleBase) {
             "48 8B 0D ?? ?? ?? ?? 48 8B 89 10 01 00 00 48 8B 09 48 85 C9 75 10 48 89 D8",
             0, moduleBase);
 
-    printf("[GAME-PTR] GameManager=0x%llX ViewData=0x%llX CameraManager=0x%llX\n",
+    g_inGameFlagAddress = ScanSigRipRelative(
+        OFFSETS::InGameFlagSignature, OFFSETS::InGameFlagStoreOffset,
+        moduleBase);
+
+    printf("[GAME-PTR] GameManager=0x%llX ViewData=0x%llX CameraManager=0x%llX InGameFlag=0x%llX\n",
         (unsigned long long)g_pGameManagerPtr,
         (unsigned long long)g_pViewDataPtr,
-        (unsigned long long)g_pCameraManagerPtr);
+        (unsigned long long)g_pCameraManagerPtr,
+        (unsigned long long)g_inGameFlagAddress);
     return g_pGameManagerPtr != 0;
 }
 
