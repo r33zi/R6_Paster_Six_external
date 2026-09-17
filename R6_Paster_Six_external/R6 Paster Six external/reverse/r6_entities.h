@@ -1015,6 +1015,7 @@ static bool InitRenderPipeline(uint64_t base, uint64_t size) {
     OFFSETS::pGameManagerPtr = g_pGameManagerPtr;
     OFFSETS::pViewDataPtr = g_pViewDataPtr;
     OFFSETS::pCameraManagerPtr = g_pCameraManagerPtr;
+    OFFSETS::inGameFlagAddress = g_inGameFlagAddress;
 
     auto calls=FindEntityFunctionCalls(base);
     g_frameSyncAddr = 0;
@@ -1117,20 +1118,26 @@ static void PollSyncBuffer(int W, int H, int maxD) {
     static DWORD s_posDbg = 0;
     bool posDbg = false;
     if (posDbg) s_posDbg = now_tick;
-    int rs = g_RoundFound ? ReadRound() : 3;
-
     static int s_lastRoundState = -2;
     extern bool sidewardsEnabled;
     extern float sidewardsValue;
 
     extern std::atomic<bool> g_manualInMatch;
-    bool isGameplay = g_manualInMatch.load(std::memory_order_acquire);
-    static bool s_wasManual = false;
-    bool wasGameplay = s_wasManual;
+    const bool processingEnabled =
+        g_manualInMatch.load(std::memory_order_acquire);
+    bool engineInGame = false;
+    const bool hasEngineState =
+        processingEnabled && ReadInGameFlag(engineInGame);
+    const bool isGameplay = processingEnabled &&
+        (!hasEngineState || engineInGame);
+    const int rs = isGameplay && g_RoundFound ? ReadRound() : 3;
+    static bool s_wasGameplay = false;
+    bool wasGameplay = s_wasGameplay;
     bool newRound = (isGameplay && !wasGameplay);
 
     if (newRound) {
-        printf("[MATCH] Manual IN MATCH toggle ON (rs=%d)\n", rs);
+        printf("[MATCH] Processing started (source=%s, rs=%d)\n",
+            hasEngineState ? "game flag" : "manual fallback", rs);
         EnsureShellPage();
         if (!g_Sidewards.found) {
             CreateThread(NULL, 0, [](LPVOID) -> DWORD { ScanSidewards(); return 0; }, NULL, 0, NULL);
@@ -1144,7 +1151,8 @@ static void PollSyncBuffer(int W, int H, int maxD) {
     }
 
     if (!isGameplay && wasGameplay) {
-        printf("[MATCH] Manual OUT OF MATCH toggle OFF - tearing down\n");
+        printf("[MATCH] Processing stopped (%s) - tearing down\n",
+            processingEnabled ? "game flag cleared" : "manual toggle");
 
         // Step 1: unpatch .text FIRST. No new hook fires can begin from this moment.
         if (g_frameSyncActive) DetachFrameSync();
@@ -1153,7 +1161,7 @@ static void PollSyncBuffer(int W, int H, int maxD) {
         g_syncComplete = false;
         FlushSyncBuffer();
         { std::lock_guard<std::mutex> l(g_frameMtx); g_capturedFrames.clear(); }
-        s_wasManual = false;
+        s_wasGameplay = false;
         s_lastRoundState = -2;
 
         // Keep the private shell page allocated while the process is alive.
@@ -1173,7 +1181,7 @@ static void PollSyncBuffer(int W, int H, int maxD) {
         EnsureShellPage();
     }
 
-    s_wasManual = isGameplay;
+    s_wasGameplay = isGameplay;
     s_lastRoundState = rs;
 
     static DWORD s_hookDelayStart = 0;

@@ -32,7 +32,23 @@ namespace OFFSETS
     static constexpr const char* ViewMatrixSignature =
         "48 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 90 48 83 C4 58 41 5D 41 5C 41 5F 5E 5B 5F 5D";
     static constexpr const char* GameManagerSignature =
-        "48 8B 0D ?? ?? ?? ?? 48 85 C9 0F 84 ?? ?? ?? ?? 48 8B 01 FF 90 90 00 00 00";
+        "48 8B 0D ?? ?? ?? ?? 48 85 C9 0F 84 ?? ?? ?? ?? 48 8B 01 FF 90";
+    static constexpr const char* InGameFlagSignature =
+        "F6 C1 07 45 0F B6 ?? 45 0F 44 ?? 41 83 E2 01 "
+        "44 89 15 ?? ?? ?? ??";
+    static constexpr uint32_t InGameFlagStoreOffset = 0x0F;
+
+    // Position-record anchor. The three coordinates are the 12 wildcard
+    // bytes beginning at +0x10; the supplied mask was shorter than the
+    // 44-byte pattern, so the known 16-byte suffix is retained explicitly.
+    static constexpr const char* PlayerPositionSignature =
+        "00 00 00 00 00 00 00 00 00 00 80 3F 00 00 00 00 "
+        "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? "
+        "00 00 00 00 9D 99 99 3E 00 00 00 00 00 00 00 00";
+    static constexpr uint32_t PlayerPositionXOffset = 0x10;
+    static constexpr uint32_t PlayerPositionYOffset = 0x14;
+    static constexpr uint32_t PlayerPositionZOffset = 0x18;
+    static constexpr uint32_t PlayerPositionSignatureSize = 0x2C;
     static constexpr const char* ViewAnchorSignature =
         "A4 70 7D BF 00 00 00 00 00 00 00 00 00 00 A0 40 "
         "00 00 A0 C0 00 00 00 00 00 00 00 00 CD CC 4C 3F "
@@ -68,4 +84,5 @@ namespace OFFSETS
     static uintptr_t pGameManagerPtr = 0;
     static uintptr_t pViewDataPtr = 0;
     static uintptr_t pCameraManagerPtr = 0;
+    static uintptr_t inGameFlagAddress = 0;
 }
