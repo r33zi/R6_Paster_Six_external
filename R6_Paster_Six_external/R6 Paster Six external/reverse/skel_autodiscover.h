@@ -493,18 +493,8 @@ namespace skad {
     // out_hash_map[bone_index] = position in out[] array. Returns number of bones found.
     static int ScanCompForBonesHash(uint64_t comp, skel::Vec3f* out, int max_out,
                                      int out_hash_map[skel::BONE_COUNT]) {
-        static const uint32_t kBoneHashesArr[] = {
-            skel::BH_PELVIS, skel::BH_STOMACH, skel::BH_LUMBAR, skel::BH_THORAX,
-            skel::BH_SPINE, skel::BH_NECK, skel::BH_LEFT_HIP, skel::BH_LEFT_KNEE,
-            skel::BH_LEFT_FOOT, skel::BH_LEFT_TOE, skel::BH_LEFT_CLAVICLE,
-            skel::BH_LEFT_SHOULDER, skel::BH_LEFT_ELBOW, skel::BH_LEFT_HAND,
-            skel::BH_RIGHT_HIP, skel::BH_RIGHT_KNEE, skel::BH_RIGHT_FOOT,
-            skel::BH_RIGHT_TOE, skel::BH_RIGHT_CLAVICLE, skel::BH_RIGHT_SHOULDER,
-            skel::BH_RIGHT_ELBOW, skel::BH_RIGHT_HAND, skel::BH_HEAD, skel::BH_ROOT
-        };
-        auto isKnownHash = [&](uint32_t v) -> int {
-            for (uint32_t h : kBoneHashesArr) if (v == h) return skel::BoneHashToIndex(h);
-            return -2;
+        auto isKnownHash = [](uint32_t value) -> int {
+            return skel::BoneHashToIndex(value);
         };
 
         // ═══ FAST PATH — IDA-derived layout (Y10+) ═══
@@ -646,7 +636,7 @@ namespace skad {
         for (uint32_t off = 0; off + 4 <= kScanBytes; off += 4) {
             uint32_t val = *(uint32_t*)(buf + off);
             int bidx = isKnownHash(val);
-            if (bidx >= -1) {  // known hash (>=0 = mapped, -1 = mapped-to-nothing)
+            if (bidx >= 0) {
                 if (nhits < 64) hits[nhits++] = { val, off, bidx };
             }
         }
