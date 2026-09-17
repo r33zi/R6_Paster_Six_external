@@ -189,6 +189,7 @@
     <ClInclude Include="Keybind.h" />
     <ClInclude Include="offsets.h" />
     <ClInclude Include="pasterx.h" />
+    <ClInclude Include="r6_bone_ids.h" />
     <ClInclude Include="r6_entities.h" />
     <ClInclude Include="r6_scanner.h" />
     <ClInclude Include="Skicript.hpp" />

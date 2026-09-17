@@ -18,9 +18,12 @@ namespace OFFSETS
     static constexpr uintptr_t CodeCaveOneRva = 0x10D73294;
     static constexpr uintptr_t CodeCaveTwoRva = 0x10D78DF4;
     static constexpr uintptr_t ActorTrampolineRva = 0x000080D2;
+    static constexpr uint32_t ActorTrampolineSize = 37;
     static constexpr uintptr_t ActorMovRva = 0x00CFCE57;
     static constexpr uintptr_t CameraMovRva = 0x0E6A4779;
+    static constexpr uint32_t CameraMovSize = 7;
     static constexpr uintptr_t CameraTrampolineRva = 0x00052192;
+    static constexpr uint32_t CameraTrampolineSize = 46;
     static constexpr uintptr_t ViewMatrixRva = 0x11FB8EF0;
     // Zero denotes that this dump did not provide a separate view block.
     static constexpr uintptr_t ViewBlockAddress = 0x00000000;
@@ -28,6 +31,7 @@ namespace OFFSETS
     static constexpr uint8_t ActorMovBytes[] = { 0x48, 0x89, 0x15 };
     static constexpr bool ActorPatternIsTypeA = true;
     static constexpr uint32_t CameraCaptureRegisterIndex = 2; // supplied as r2
+    static constexpr bool CameraCaptureRegisterHigh = true;
     static constexpr uintptr_t CameraPositionOffset = 0x190;
     static constexpr uintptr_t ViewProjectionOffset = 0x250;
 

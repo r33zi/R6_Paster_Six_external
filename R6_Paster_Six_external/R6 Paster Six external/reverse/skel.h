@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdarg>
 #include "driver.h"
+#include "r6_bone_ids.h"
 
 extern DWORD processID;
 
@@ -444,57 +445,29 @@ namespace skel
         BONE_COUNT
     };
 
-    // Bone hashes from R6 — each bone entry in the skeleton array has a uint32_t
-    // hash identifying which bone it is. Scan for these to find exact positions.
-    enum BoneHash : uint32_t {
-        BH_PELVIS         = 0xDED10611,
-        BH_STOMACH        = 0x530EC1CB,
-        BH_LUMBAR         = 0x8F39FA4E,
-        BH_THORAX         = 0x1630ABF4,
-        BH_SPINE          = 0x8023796D,
-        BH_NECK           = 0x07C159A2,
-        BH_LEFT_HIP       = 0x176183F0,
-        BH_LEFT_KNEE      = 0x060DF401,
-        BH_LEFT_FOOT      = 0x58988870,
-        BH_LEFT_TOE       = 0xB95094E1,
-        BH_LEFT_CLAVICLE  = 0x2D4660A8,
-        BH_LEFT_SHOULDER  = 0xEB830ADA,
-        BH_LEFT_ELBOW     = 0x89B93A80,
-        BH_LEFT_HAND      = 0xB675F36C,
-        BH_RIGHT_HIP      = 0x757F1291,
-        BH_RIGHT_KNEE     = 0x863D09FC,
-        BH_RIGHT_FOOT     = 0x9B14362C,
-        BH_RIGHT_TOE      = 0x42BE0FCB,
-        BH_RIGHT_CLAVICLE = 0xF60647E5,
-        BH_RIGHT_SHOULDER = 0x6BB3F727,
-        BH_RIGHT_ELBOW    = 0x7257A1AA,
-        BH_RIGHT_HAND     = 0x75F94D30,
-        BH_HEAD           = 0xA9CEFD4A,
-        BH_ROOT           = 0x22E53C03,
-        BH_COUNT = 24
-    };
-
-    // Map bone hash → our internal bone index. -1 = not mapped (toe, clavicle, etc.)
+    // Map an engine bone hash to the overlay's compact drawing-bone index.
+    // The arm/leg entries identify the start of each segment, so forearm and
+    // lower-leg IDs supply the elbow and knee joints respectively.
     inline int BoneHashToIndex(uint32_t h) {
         switch (h) {
-        case BH_HEAD:           return BONE_HEAD;
-        case BH_NECK:           return BONE_NECK;
-        case BH_SPINE:          return BONE_SPINE;
-        case BH_LEFT_SHOULDER:  return BONE_L_SHOULDER;
-        case BH_LEFT_ELBOW:     return BONE_L_ELBOW;
-        case BH_LEFT_HAND:      return BONE_L_HAND;
-        case BH_RIGHT_SHOULDER: return BONE_R_SHOULDER;
-        case BH_RIGHT_ELBOW:    return BONE_R_ELBOW;
-        case BH_RIGHT_HAND:     return BONE_R_HAND;
-        case BH_LEFT_HIP:       return BONE_L_HIP;
-        case BH_LEFT_KNEE:      return BONE_L_KNEE;
-        case BH_LEFT_FOOT:      return BONE_L_ANKLE;
-        case BH_LEFT_TOE:       return BONE_L_FOOT;
-        case BH_RIGHT_HIP:      return BONE_R_HIP;
-        case BH_RIGHT_KNEE:     return BONE_R_KNEE;
-        case BH_RIGHT_FOOT:     return BONE_R_ANKLE;
-        case BH_RIGHT_TOE:      return BONE_R_FOOT;
-        default:                return -1;
+        case BoneHash(BipedBoneID::BONE_HEAD):          return BONE_HEAD;
+        case BoneHash(BipedBoneID::BONE_NECK):          return BONE_NECK;
+        case BoneHash(BipedBoneID::BONE_SPINE):         return BONE_SPINE;
+        case BoneHash(BipedBoneID::BONE_LEFTSHOULDER):  return BONE_L_SHOULDER;
+        case BoneHash(BipedBoneID::BONE_LEFTFOREARM):   return BONE_L_ELBOW;
+        case BoneHash(BipedBoneID::BONE_LEFTHAND):      return BONE_L_HAND;
+        case BoneHash(BipedBoneID::BONE_RIGHTSHOULDER): return BONE_R_SHOULDER;
+        case BoneHash(BipedBoneID::BONE_RIGHTFOREARM):  return BONE_R_ELBOW;
+        case BoneHash(BipedBoneID::BONE_RIGHTHAND):     return BONE_R_HAND;
+        case BoneHash(BipedBoneID::BONE_LEFTUPLEG):     return BONE_L_HIP;
+        case BoneHash(BipedBoneID::BONE_LEFTLEG):       return BONE_L_KNEE;
+        case BoneHash(BipedBoneID::BONE_LEFTFOOT):      return BONE_L_ANKLE;
+        case BoneHash(BipedBoneID::BONE_LEFTTOEBASE):   return BONE_L_FOOT;
+        case BoneHash(BipedBoneID::BONE_RIGHTUPLEG):    return BONE_R_HIP;
+        case BoneHash(BipedBoneID::BONE_RIGHTLEG):      return BONE_R_KNEE;
+        case BoneHash(BipedBoneID::BONE_RIGHTFOOT):     return BONE_R_ANKLE;
+        case BoneHash(BipedBoneID::BONE_RIGHTTOEBASE):  return BONE_R_FOOT;
+        default:                                         return -1;
         }
     }
 
@@ -788,26 +761,7 @@ namespace skel
                     if (!ReadRaw(bonesPtr, fbuf.data(), kMaxBones * kEntry)) continue;
                     // Find hash offset within entries
                     auto isKnownHash = [](uint32_t v) -> int {
-                        switch (v) {
-                        case 0xA9CEFD4A: return 0;  // HEAD
-                        case 0x07C159A2: return 1;  // NECK
-                        case 0x8023796D: return 2;  // SPINE
-                        case 0x176183F0: return 9;  // L_HIP
-                        case 0x060DF401: return 10; // L_KNEE
-                        case 0x58988870: return 11; // L_ANKLE
-                        case 0x757F1291: return 13; // R_HIP
-                        case 0x863D09FC: return 14; // R_KNEE
-                        case 0x9B14362C: return 15; // R_ANKLE
-                        case 0xEB830ADA: return 4;  // L_SHOULDER
-                        case 0x89B93A80: return 5;  // L_ELBOW
-                        case 0xB675F36C: return 6;  // L_HAND
-                        case 0x6BB3F727: return 7;  // R_SHOULDER
-                        case 0x7257A1AA: return 8;  // R_ELBOW
-                        case 0x75F94D30: return 16; // R_HAND
-                        case 0xDED10611: return -1; // PELVIS (skip — not in BONE_COUNT enum)
-                        case 0x22E53C03: return -1; // ROOT (skip)
-                        default: return -2;
-                        }
+                        return BoneHashToIndex(v);
                     };
 
                     int bestHashOff = -1, bestHashScore = 0;

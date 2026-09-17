@@ -23,6 +23,7 @@
     <ClInclude Include="ud.h" />
     <ClInclude Include="Keybind.h" />
     <ClInclude Include="offsets.h" />
+    <ClInclude Include="r6_bone_ids.h" />
     <ClInclude Include="FVector.h" />
     <ClInclude Include="Skicript.hpp" />
     <ClInclude Include="xstring.h" />
