@@ -78,16 +78,15 @@ static bool ReadInGameFlag(bool& inGame) {
         inGame = cachedValue;
         return true;
     }
-    lastRead = now;
     uint32_t value = 0;
     if (driver->ReadProcessMemory(
             g_inGameFlagAddress, &value, sizeof(value)) != 0 || value > 1) {
-        if (hasCachedValue) {
-            inGame = cachedValue;
-            return true;
-        }
+        lastRead = 0;
+        cachedValue = false;
+        hasCachedValue = false;
         return false;
     }
+    lastRead = now;
     cachedValue = value != 0;
     hasCachedValue = true;
     inGame = cachedValue;
@@ -116,8 +115,14 @@ static bool ScanGamePointers(uint64_t moduleBase) {
             "48 8B 05 ?? ?? ?? ?? 48 8B 88 ?? ?? ?? ?? 0F 28", 0, moduleBase);
 
     g_pCameraManagerPtr = ScanSigRipRelative(
-        "48 8B 05 ?? ?? ?? ?? 48 8B 80 10 01 00 00 48 8B 00 48 85 C0 75 30 45 31 F6",
-        0, moduleBase);
+        OFFSETS::CameraOneSignature, 0, moduleBase);
+    if (!g_pCameraManagerPtr)
+        g_pCameraManagerPtr = ScanSigRipRelative(
+            OFFSETS::CameraTwoSignature, 0, moduleBase);
+    if (!g_pCameraManagerPtr)
+        g_pCameraManagerPtr = ScanSigRipRelative(
+            "48 8B 05 ?? ?? ?? ?? 48 8B 80 10 01 00 00 48 8B 00 48 85 C0 75 30 45 31 F6",
+            0, moduleBase);
     if (!g_pCameraManagerPtr)
         g_pCameraManagerPtr = ScanSigRipRelative(
             "48 8B 0D ?? ?? ?? ?? 48 8B 89 10 01 00 00 48 8B 09 48 85 C9 75 10 48 89 D8",

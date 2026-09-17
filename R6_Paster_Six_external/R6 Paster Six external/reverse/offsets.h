@@ -22,6 +22,14 @@ namespace OFFSETS
     static constexpr uintptr_t CameraMovRva = 0x0E6A4779;
     static constexpr uintptr_t CameraTrampolineRva = 0x00052192;
     static constexpr uintptr_t ViewMatrixRva = 0x11FB8EF0;
+    // Zero denotes that this dump did not provide a separate view block.
+    static constexpr uintptr_t ViewBlockAddress = 0x00000000;
+
+    static constexpr uint8_t ActorMovBytes[] = { 0x48, 0x89, 0x15 };
+    static constexpr bool ActorPatternIsTypeA = true;
+    static constexpr uint32_t CameraCaptureRegisterIndex = 2; // supplied as r2
+    static constexpr uintptr_t CameraPositionOffset = 0x190;
+    static constexpr uintptr_t ViewProjectionOffset = 0x250;
 
     static constexpr const char* ActorCallerSignature =
         "65 ? 8B ? 25 58 00 00 00 ? 8B ? ? ? 8D ? ? ? ? 00 ? C1 ? 03";
@@ -29,10 +37,16 @@ namespace OFFSETS
         "C7 44 24 28 00 08 00 00 4C 89";
     static constexpr const char* CameraSignatureFallback =
         "C7 44 24 28 00 08 00 00";
+    static constexpr const char* CameraOneSignature =
+        "48 8B 0D ?? ?? ?? ?? 4C 8B 01 41 FF 90 D8 00 00 00 F3 0F 10";
+    static constexpr const char* CameraTwoSignature =
+        "48 8B 0D ?? ?? ?? ?? 48 8B 01 FF 90 D8 00 00 00 F3 0F 10";
     static constexpr const char* ViewMatrixSignature =
         "48 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 90 48 83 C4 58 41 5D 41 5C 41 5F 5E 5B 5F 5D";
     static constexpr const char* GameManagerSignature =
         "48 8B 0D ?? ?? ?? ?? 48 85 C9 0F 84 ?? ?? ?? ?? 48 8B 01 FF 90";
+    static constexpr const char* EntitySignature =
+        "FF 91 E0 00 00 00 8B B8 10 01 00 00";
     static constexpr const char* InGameFlagSignature =
         "F6 C1 07 45 0F B6 ?? 45 0F 44 ?? 41 83 E2 01 "
         "44 89 15 ?? ?? ?? ??";
