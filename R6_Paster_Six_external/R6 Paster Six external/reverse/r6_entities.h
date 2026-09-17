@@ -305,8 +305,16 @@ static int FindBoundary(const uint8_t* c, int minB) {
     return p;
 }
 
-static Matrix4x4 QueryProjectionMatrix() { return g_projectionAddr ? read<Matrix4x4>(g_projectionAddr+0x250) : Matrix4x4{}; }
-static Vec3 QueryCameraOrigin() { return g_projectionAddr ? read<Vec3>(g_projectionAddr+0x190) : Vec3{}; }
+static Matrix4x4 QueryProjectionMatrix() {
+    return g_projectionAddr
+        ? read<Matrix4x4>(g_projectionAddr + OFFSETS::ViewProjectionOffset)
+        : Matrix4x4{};
+}
+static Vec3 QueryCameraOrigin() {
+    return g_projectionAddr
+        ? read<Vec3>(g_projectionAddr + OFFSETS::CameraPositionOffset)
+        : Vec3{};
+}
 
 static bool IsProjectionMatrixUsable(const Matrix4x4& matrix) {
     int nonZeroComponents = 0;
@@ -323,7 +331,8 @@ static bool RefreshProjectionFromViewData() {
     if (!g_pViewDataPtr) return false;
     const uint64_t viewData = read<uint64_t>(g_pViewDataPtr);
     if (!IsValidAddr(viewData)) return false;
-    const Matrix4x4 matrix = read<Matrix4x4>(viewData + 0x250);
+    const Matrix4x4 matrix = read<Matrix4x4>(
+        viewData + OFFSETS::ViewProjectionOffset);
     if (!IsProjectionMatrixUsable(matrix)) return false;
     if (g_projectionAddr != viewData) {
         g_projectionAddr = viewData;
@@ -336,7 +345,8 @@ static bool RefreshProjectionFromViewData() {
 static DWORD WINAPI RescanProjectionThread(LPVOID) {
     uint64_t newProjection = ScanForViewTrans(g_imageBase, g_imageSize);
     if (newProjection && IsProjectionMatrixUsable(
-            read<Matrix4x4>(newProjection + 0x250)))
+            read<Matrix4x4>(
+                newProjection + OFFSETS::ViewProjectionOffset)))
         g_pendingProjectionAddr.store(newProjection, std::memory_order_release);
     g_projectionScanActive.store(false, std::memory_order_release);
     return 0;
@@ -1252,7 +1262,8 @@ static void PollSyncBuffer(int W, int H, int maxD) {
     const uint64_t pendingProjection =
         g_pendingProjectionAddr.exchange(0, std::memory_order_acq_rel);
     if (pendingProjection && IsProjectionMatrixUsable(
-            read<Matrix4x4>(pendingProjection + 0x250)))
+            read<Matrix4x4>(
+                pendingProjection + OFFSETS::ViewProjectionOffset)))
         g_projectionAddr = pendingProjection;
 
     static DWORD s_lastViewDataRefresh = 0;
