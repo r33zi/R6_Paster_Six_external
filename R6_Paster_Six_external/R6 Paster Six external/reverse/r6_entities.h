@@ -444,6 +444,8 @@ static void FlushShaderCache() {
 // Root offset (0x30 or 0x20) and flag word (0x6E or 0x5E) drift between
 // builds — try both. Plain actor vectors are deliberately handled by the
 // caller only after the live character-component position has been tried.
+// The current leaf is a position record whose contiguous XYZ values begin at
+// OFFSETS::PlayerPositionXOffset; older builds exposed a vec3 at other offsets.
 //
 static inline uint64_t DecObfPtr(uint64_t p) {
     const uint64_t key = p >> 48;
@@ -501,12 +503,18 @@ static bool TryEncryptedActorPos(uint64_t actor, Vec3& out) {
                               (unsigned long long)e4, (unsigned long long)pos_ptr, (int)IsValidAddr(pos_ptr));
             if (!e4 || !IsValidAddr(pos_ptr)) continue;
 
-            Vec3 p = read<Vec3>(pos_ptr);
-            if (trace) printf("[ENC]     vec3@leaf=(%.1f,%.1f,%.1f) valid=%d\n",
-                              p.x, p.y, p.z, (int)ValidateWorldCoord(p));
-            if (ValidateWorldCoord(p)) { out = p; return true; }
+            static_assert(OFFSETS::PlayerPositionYOffset == OFFSETS::PlayerPositionXOffset + sizeof(float));
+            static_assert(OFFSETS::PlayerPositionZOffset == OFFSETS::PlayerPositionYOffset + sizeof(float));
+            uint64_t recordHeader[2]{};
+            if (SR(pos_ptr, recordHeader, sizeof(recordHeader)) &&
+                recordHeader[0] == 0 && recordHeader[1] == 0x000000003F800000ULL) {
+                Vec3 current = read<Vec3>(pos_ptr + OFFSETS::PlayerPositionXOffset);
+                if (trace) printf("[ENC]     current-record=(%.1f,%.1f,%.1f) valid=%d\n",
+                                  current.x, current.y, current.z, (int)ValidateWorldCoord(current));
+                if (ValidateWorldCoord(current)) { out = current; return true; }
+            }
 
-            for (uint64_t inner : { 0x30ULL, 0x50ULL, 0x60ULL, 0xB00ULL }) {
+            for (uint64_t inner : { 0x00ULL, 0x30ULL, 0x50ULL, 0x60ULL, 0xB00ULL }) {
                 Vec3 q = read<Vec3>(pos_ptr + inner);
                 if (trace) printf("[ENC]     vec3@leaf+0x%llX=(%.1f,%.1f,%.1f) valid=%d\n",
                                   (unsigned long long)inner, q.x, q.y, q.z, (int)ValidateWorldCoord(q));
